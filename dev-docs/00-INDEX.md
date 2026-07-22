@@ -12,4 +12,5 @@ Status: fundament v1 zaimplementowany. Panel działa niezależnie na `:8081`; pi
 - [Roadmapa](ROADMAP.md)
 - [Plan kolejnych kroków](NEXT_STEPS.md)
 - [Instrukcja panelu serwisowego](PANEL_GUIDE.md)
+- [Punkt powrotu sesji](SESSION_HANDOFF.md)
 - [ADR-001](adr/001-separate-support-panel.md)
