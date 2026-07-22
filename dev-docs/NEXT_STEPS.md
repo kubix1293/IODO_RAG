@@ -78,3 +78,4 @@ Kryterium odbioru: zakończony przegląd pilotażu i udokumentowana decyzja doty
 - 2026-07-22: etap 2 ukończony; pełny stos uruchomiony. Reranker otrzymał limit batcha 2048/32 z powodu hosta 8 GiB. Rozpoczęto etap 3.
 - 2026-07-22: etap 3 ukończony; modele, API, CSRF, RBAC, audyt, izolacja klientów i wznowienie kolejki po restarcie przeszły testy. Naprawiono zapis niefinitywnych wyników rankingu w checkpointach. Rozpoczęto etap 4; potrzebne są rzeczywiste zanonimizowane przypadki.
 - 2026-07-22: dodano systemy ZZL i ASW oraz formularz `/cases` dla seniora/admina. Test potwierdził, że lista ZZL nie zwraca przypadku ASW, a technik otrzymuje 403.
+- 2026-07-22: dodano formularz `/tickets/new` dla ręcznych zgłoszeń i `/knowledge` dla systemowego importu PDF/DOCX. Dokumentacja jest indeksowana i dostępna retrievalowi wyłącznie w swoim systemie oraz zakresie klienta.

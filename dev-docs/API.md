@@ -8,4 +8,6 @@ Przypadki historyczne:
 - `GET /api/v1/cases?program_id={id}` — lista wyłącznie jednego wskazanego systemu;
 - `GET /cases` — formularz panelu dla seniora/admina.
 
+Interfejs panelu udostępnia `GET /login`, `GET /tickets/new` dla ręcznego wprowadzania zgłoszeń oraz `GET /knowledge` dla importu PDF/DOCX przez seniora/admina. Dokument jest zawsze przypisany do jednego systemu oraz zakresu globalnego albo prywatnego klienta.
+
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.

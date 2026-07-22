@@ -1,6 +1,7 @@
 .env
 data/uploads/
 data/inbox/
+data/support-uploads/
 __pycache__/
 *.py[cod]
 .pytest_cache/

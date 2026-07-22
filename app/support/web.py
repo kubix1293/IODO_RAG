@@ -56,9 +56,61 @@ def health(): return {"status":"ok"}
 @app.get("/",response_class=HTMLResponse)
 def index(request:Request):
     current=session_user(request.cookies.get("support_session"))
-    if not current: return "<h1>IODO Support</h1><p>Zaloguj się przez <code>POST /api/v1/auth/login</code>. Dokumentacja: <a href='/docs'>/docs</a></p>"
-    cases_link = "<p><a href='/cases'>Baza przypadków serwisowych</a></p>" if current["role"] in {"senior_technician","admin"} else ""
-    return f"<h1>IODO Support</h1><p>Zalogowany: {html.escape(current['username'])} ({current['role']})</p>{cases_link}<p>API: <a href='/docs'>/docs</a></p>"
+    if not current: return "<h1>IODO Support</h1><p><a href='/login'>Zaloguj się do panelu</a></p>"
+    senior_links = "<p><a href='/cases'>Baza przypadków serwisowych</a></p><p><a href='/knowledge'>Import dokumentacji technicznej</a></p>" if current["role"] in {"senior_technician","admin"} else ""
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return f"<h1>IODO Support</h1><p>Zalogowany: {html.escape(current['username'])} ({current['role']})</p><p><a href='/tickets/new'>Nowe zgłoszenie serwisowe</a></p>{senior_links}<p>API: <a href='/docs'>/docs</a></p><button id='logout'>Wyloguj</button><script>document.getElementById('logout').onclick=async()=>{{await fetch('/api/v1/auth/logout',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/login';}}</script>"
+
+@app.get("/login",response_class=HTMLResponse)
+def login_page(request:Request):
+    if session_user(request.cookies.get("support_session")): return "<p>Jesteś już zalogowany. <a href='/'>Przejdź do panelu</a>.</p>"
+    return """<!doctype html><html lang='pl'><meta charset='utf-8'><title>Logowanie — IODO Support</title>
+    <style>body{font:16px system-ui;max-width:420px;margin:4rem auto;padding:0 1rem}label{display:block;margin-top:1rem}input{width:100%;padding:.7rem;box-sizing:border-box}button{margin-top:1rem;padding:.7rem 1.2rem}#message{margin-top:1rem;color:#a00}</style>
+    <h1>IODO Support</h1><form id='login-form'><label>Użytkownik<input name='username' autocomplete='username' required></label><label>Hasło<input type='password' name='password' autocomplete='current-password' required></label><button type='submit'>Zaloguj</button></form><div id='message'></div>
+    <script>document.getElementById('login-form').addEventListener('submit',async(e)=>{e.preventDefault();const f=new FormData(e.target);const r=await fetch('/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(f.entries()))});if(r.ok)location='/';else document.getElementById('message').textContent='Nieprawidłowy użytkownik lub hasło.';});</script></html>"""
+
+@app.get("/tickets/new",response_class=HTMLResponse)
+def new_ticket_page(current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
+        clients=cur.fetchall()
+        cur.execute("SELECT id,name FROM support.programs WHERE active AND name NOT LIKE 'Smoke %' ORDER BY name")
+        programs=cur.fetchall()
+        cur.execute("SELECT id,client_id,program_id,version,environment FROM support.client_installations WHERE active ORDER BY id")
+        installations=cur.fetchall()
+    client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
+    program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
+    installation_json=html.escape(json.dumps(installations,ensure_ascii=False),quote=False)
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Nowe zgłoszenie</title>
+    <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:12rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
+    <h1>Nowe zgłoszenie serwisowe</h1><form id='ticket-form'>
+    <label>Klient<select name='client_id' required>{client_options}</select></label>
+    <label>System<select name='program_id' required>{program_options}</select></label>
+    <label>Instalacja<select name='installation_id'><option value=''>Brak / nie dotyczy</option></select></label>
+    <label>Opis zgłoszenia<textarea name='description' minlength='10' required placeholder='Objawy, kod błędu, wersja, wykonane czynności...'></textarea></label>
+    <button type='submit'>Utwórz zgłoszenie</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
+    <script>const installations={installation_json};const form=document.getElementById('ticket-form');const install=form.installation_id;function refresh(){{install.innerHTML='<option value="">Brak / nie dotyczy</option>';for(const row of installations)if(row.client_id==form.client_id.value&&row.program_id==form.program_id.value){{const o=document.createElement('option');o.value=row.id;o.textContent=[row.version,row.environment].filter(Boolean).join(' / ')||('Instalacja '+row.id);install.appendChild(o);}}}}form.client_id.onchange=refresh;form.program_id.onchange=refresh;refresh();form.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(form);const body=Object.fromEntries(f.entries());body.client_id=Number(body.client_id);body.program_id=Number(body.program_id);body.installation_id=body.installation_id?Number(body.installation_id):null;const r=await fetch('/api/v1/tickets',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});const m=document.getElementById('message');if(r.ok){{const data=await r.json();m.innerHTML='Zgłoszenie utworzone: <a href="/api/v1/tickets/'+data.id+'">'+data.id+'</a>';form.description.value='';}}else m.textContent='Błąd: '+await r.text();}});</script></html>"""
+
+@app.get("/knowledge",response_class=HTMLResponse)
+def knowledge_page(current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,name FROM support.programs WHERE active AND name NOT LIKE 'Smoke %' ORDER BY name")
+        programs=cur.fetchall()
+        cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
+        clients=cur.fetchall()
+    program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
+    client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Import dokumentacji</title>
+    <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}select,input{{width:100%;padding:.6rem;box-sizing:border-box}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
+    <h1>Import dokumentacji technicznej</h1><p>PDF lub DOCX zostanie przypisany do jednego systemu. Zakres globalny jest dostępny wszystkim klientom tego systemu; zakres klienta tylko wybranemu klientowi.</p>
+    <form id='knowledge-form'><label>System<select name='program_id' required>{program_options}</select></label>
+    <label>Zakres<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla klienta</option></select></label>
+    <label id='client-label' hidden>Klient<select name='client_id'><option value=''>Wybierz klienta</option>{client_options}</select></label>
+    <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Importuj i indeksuj</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
+    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(form)}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>"""
 
 @app.get("/cases",response_class=HTMLResponse)
 def cases_page(current=Depends(user)):
@@ -177,6 +229,7 @@ def close(ticket_id:uuid.UUID,body:CloseIn,current=Depends(csrf)):
 
 @app.post("/api/v1/knowledge/documents",status_code=202)
 def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):
+    require_role(current,"senior_technician")
     if scope not in {"global","client"} or (scope=="client" and not client_id): raise HTTPException(422,"Nieprawidłowy zakres")
     suffix=Path(file.filename or "").suffix.lower()
     if suffix not in {".pdf",".docx"}: raise HTTPException(415,"Obsługiwane są PDF i DOCX")

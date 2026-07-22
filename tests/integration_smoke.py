@@ -4,8 +4,10 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from io import BytesIO
 
 import requests
+from docx import Document
 
 from support.db import connect
 from support.security import hash_password
@@ -78,16 +80,33 @@ def main() -> None:
         assert own_document_id in visible_ids and other_document_id not in visible_ids
 
     session = requests.Session()
+    assert session.get(BASE + "/login", timeout=10).status_code == 200
     login = require(
         session.post(BASE + "/api/v1/auth/login", json={"username": os.environ["SUPPORT_BOOTSTRAP_USER"], "password": os.environ["SUPPORT_BOOTSTRAP_PASSWORD"]}),
         200,
     )
     headers = {"X-CSRF-Token": login["csrf_token"]}
+    assert session.get(BASE + "/", timeout=10).status_code == 200
     assert session.get(BASE + "/cases", timeout=10).status_code == 200
+    assert session.get(BASE + "/tickets/new", timeout=10).status_code == 200
+    assert session.get(BASE + "/knowledge", timeout=10).status_code == 200
     assert session.post(BASE + "/api/v1/tickets", json={}, timeout=10).status_code == 403
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT id,name FROM support.programs WHERE name IN ('ZZL','ASW')")
         system_ids = {row["name"]: row["id"] for row in cur.fetchall()}
+    document=Document(); document.add_paragraph(f"Instrukcja ZZL {suffix}: aby odblokować zapis, sprawdź uprawnienia operatora.")
+    document_bytes=BytesIO(); document.save(document_bytes); document_bytes.seek(0)
+    indexed=require(
+        session.post(
+            BASE + "/api/v1/knowledge/documents",
+            headers=headers,
+            data={"program_id":system_ids["ZZL"],"scope":"global"},
+            files={"file":(f"instrukcja-zzl-{suffix}.docx",document_bytes,"application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            timeout=120,
+        ),
+        202,
+    )
+    assert indexed["status"]=="indexed" and indexed["chunks"]>=1
     created_cases = {}
     for system_name in ("ZZL", "ASW"):
         created_cases[system_name] = require(
@@ -172,6 +191,8 @@ def main() -> None:
     )
     assert forbidden_case.status_code == 403, forbidden_case.text
     assert technician.get(BASE + "/cases", timeout=10).status_code == 403
+    assert technician.get(BASE + "/tickets/new", timeout=10).status_code == 200
+    assert technician.get(BASE + "/knowledge", timeout=10).status_code == 403
     print(f"integration smoke passed: ticket={ticket_id}")
 
 

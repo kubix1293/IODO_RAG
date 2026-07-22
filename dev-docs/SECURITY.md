@@ -5,6 +5,7 @@
 - CSRF: osobny losowy token porównywany z sesją.
 - RBAC: technician, senior_technician, admin; publikacja wiedzy wymaga roli senior lub admin.
 - Dodawanie i przeglądanie przypadków historycznych wymaga roli senior lub admin; każdy odczyt wymaga wskazania jednego systemu.
+- Import dokumentacji technicznej wymaga roli senior lub admin. Zakres klienta wymaga jawnego `client_id`; wyszukiwanie nadal filtruje system i klienta.
 - Izolacja: program zawsze obowiązkowy; prywatna wiedza tylko dla klienta zgłoszenia.
 - Anonimizacja: źródła przekazywane do UI są redagowane; test obejmuje e-mail, telefon i identyfikatory.
 - Audyt: wszystkie modyfikujące operacje zapisują aktora, akcję, encję i metadane.
