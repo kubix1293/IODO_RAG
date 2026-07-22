@@ -2,4 +2,10 @@
 
 OpenAPI jest pod `/docs`. Endpointy obejmują logowanie/wylogowanie, CRUD przebiegu zgłoszenia, start/wznowienie workflow, decyzję problemu, pełny/interaktywny tryb rozwiązania, wynik kroku, feedback, zamknięcie, import wiedzy oraz akceptację/odrzucenie rozwiązania.
 
+Przypadki historyczne:
+
+- `POST /api/v1/cases` — dodanie opisu zgłoszenia i rozwiązania przez seniora/admina;
+- `GET /api/v1/cases?program_id={id}` — lista wyłącznie jednego wskazanego systemu;
+- `GET /cases` — formularz panelu dla seniora/admina.
+
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.

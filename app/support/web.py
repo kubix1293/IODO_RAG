@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, os, shutil, uuid
+import hashlib, html, json, os, shutil, uuid
 from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse
@@ -23,6 +23,14 @@ class ResolutionMode(BaseModel): attempt_id:uuid.UUID; mode:str=Field(pattern="^
 class StepResult(BaseModel): attempt_id:uuid.UUID; result:str; successful:bool|None=None
 class FeedbackIn(BaseModel): attempt_id:uuid.UUID; outcome:str; comment:str|None=None
 class CloseIn(BaseModel): final_attempt_id:uuid.UUID|None=None
+class HistoricalCaseIn(BaseModel):
+    program_id:int
+    title:str=Field(min_length=3,max_length=240)
+    ticket_description:str=Field(min_length=10)
+    resolution:str=Field(min_length=10)
+    error_code:str|None=None
+    version:str|None=None
+    environment:str|None=None
 
 def user(request:Request):
     found=session_user(request.cookies.get("support_session"))
@@ -49,7 +57,27 @@ def health(): return {"status":"ok"}
 def index(request:Request):
     current=session_user(request.cookies.get("support_session"))
     if not current: return "<h1>IODO Support</h1><p>Zaloguj się przez <code>POST /api/v1/auth/login</code>. Dokumentacja: <a href='/docs'>/docs</a></p>"
-    return f"<h1>IODO Support</h1><p>Zalogowany: {current['username']} ({current['role']})</p><p>API: <a href='/docs'>/docs</a></p>"
+    cases_link = "<p><a href='/cases'>Baza przypadków serwisowych</a></p>" if current["role"] in {"senior_technician","admin"} else ""
+    return f"<h1>IODO Support</h1><p>Zalogowany: {html.escape(current['username'])} ({current['role']})</p>{cases_link}<p>API: <a href='/docs'>/docs</a></p>"
+
+@app.get("/cases",response_class=HTMLResponse)
+def cases_page(current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,name FROM support.programs WHERE active ORDER BY name")
+        programs=cur.fetchall()
+    options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Przypadki serwisowe</title>
+    <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:8rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
+    <h1>Dodaj przypadek serwisowy</h1><p>Każdy przypadek należy dokładnie do jednego systemu. Dane ZZL i ASW są wyszukiwane oddzielnie.</p>
+    <form id='case-form'><label>System<select name='program_id' required>{options}</select></label>
+    <label>Tytuł<input name='title' minlength='3' required></label>
+    <label>Opis zgłoszenia<textarea name='ticket_description' minlength='10' required></textarea></label>
+    <label>Rozwiązanie<textarea name='resolution' minlength='10' required></textarea></label>
+    <label>Kod błędu<input name='error_code'></label><label>Wersja<input name='version'></label><label>Środowisko<input name='environment'></label>
+    <button type='submit'>Zapisz przypadek</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
+    <script>document.getElementById('case-form').addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());body.program_id=Number(body.program_id);for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok)e.target.reset();}});</script></html>"""
 
 @app.post("/api/v1/auth/login")
 def login(body:Login,request:Request,response:Response):
@@ -163,6 +191,29 @@ def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|N
         for index,(chunk,vector) in enumerate(zip(chunks,vectors)):
             cur.execute("INSERT INTO support.knowledge_chunks(document_id,chunk_index,chunk_text,metadata,embedding) VALUES(%s,%s,%s,%s::jsonb,%s::vector)",(doc,index,chunk["text"],json.dumps(chunk.get("metadata",{})),to_pgvector(vector)))
     return {"document_id":doc,"status":"indexed","chunks":len(chunks)}
+
+@app.post("/api/v1/cases",status_code=201)
+def create_historical_case(body:HistoricalCaseIn,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    case_id=uuid.uuid4()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT name FROM support.programs WHERE id=%s AND active",(body.program_id,))
+        program=cur.fetchone()
+        if not program: raise HTTPException(404,"Nie znaleziono aktywnego systemu")
+        cur.execute("""INSERT INTO support.historical_cases(id,program_id,title,ticket_description,resolution,error_code,version,environment,created_by)
+          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+          (case_id,body.program_id,body.title,body.ticket_description,body.resolution,body.error_code,body.version,body.environment,current["id"]))
+        row=cur.fetchone(); audit(cur,current["id"],"create","historical_case",case_id,{"program_id":body.program_id,"program":program["name"]})
+    return row
+
+@app.get("/api/v1/cases")
+def list_historical_cases(program_id:int,current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT c.id,c.program_id,p.name program,c.title,c.ticket_description,c.resolution,c.error_code,c.version,c.environment,c.status,c.created_at
+          FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id
+          WHERE c.program_id=%s AND c.status<>'retired' ORDER BY c.created_at DESC""",(program_id,))
+        return {"program_id":program_id,"cases":cur.fetchall()}
 
 @app.post("/api/v1/solutions/{solution_id}/approve")
 def approve(solution_id:int,current=Depends(csrf)):

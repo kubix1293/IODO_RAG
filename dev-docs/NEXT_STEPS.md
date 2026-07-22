@@ -47,6 +47,8 @@ Status: **w toku — oczekuje na dane historyczne**
 - opisać oczekiwany problem i rozwiązanie;
 - uruchomić pomiar top 5/top 3.
 
+Panel przyjmowania przypadków jest dostępny pod `/cases` dla seniora/admina. Systemy ZZL i ASW są rozdzielone obowiązkowym `program_id`. Oczekujemy na wskazanie pliku źródłowego z przykładami.
+
 Kryterium odbioru: minimum 80% właściwych problemów w top 5 i 80% właściwych rozwiązań w top 3.
 
 ## 5. Funkcje pilotażowe
@@ -75,3 +77,4 @@ Kryterium odbioru: zakończony przegląd pilotażu i udokumentowana decyzja doty
 - 2026-07-22: etap 1 ukończony; sekrety wygenerowane, `.env` ma tryb 0600 i pozostaje poza Git. Rozpoczęto etap 2.
 - 2026-07-22: etap 2 ukończony; pełny stos uruchomiony. Reranker otrzymał limit batcha 2048/32 z powodu hosta 8 GiB. Rozpoczęto etap 3.
 - 2026-07-22: etap 3 ukończony; modele, API, CSRF, RBAC, audyt, izolacja klientów i wznowienie kolejki po restarcie przeszły testy. Naprawiono zapis niefinitywnych wyników rankingu w checkpointach. Rozpoczęto etap 4; potrzebne są rzeczywiste zanonimizowane przypadki.
+- 2026-07-22: dodano systemy ZZL i ASW oraz formularz `/cases` dla seniora/admina. Test potwierdził, że lista ZZL nie zwraca przypadku ASW, a technik otrzymuje 403.

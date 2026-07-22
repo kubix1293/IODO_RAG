@@ -83,7 +83,25 @@ def main() -> None:
         200,
     )
     headers = {"X-CSRF-Token": login["csrf_token"]}
+    assert session.get(BASE + "/cases", timeout=10).status_code == 200
     assert session.post(BASE + "/api/v1/tickets", json={}, timeout=10).status_code == 403
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,name FROM support.programs WHERE name IN ('ZZL','ASW')")
+        system_ids = {row["name"]: row["id"] for row in cur.fetchall()}
+    created_cases = {}
+    for system_name in ("ZZL", "ASW"):
+        created_cases[system_name] = require(
+            session.post(
+                BASE + "/api/v1/cases",
+                headers=headers,
+                json={"program_id": system_ids[system_name], "title": f"Przypadek {system_name} {suffix}", "ticket_description": f"Opis zgłoszenia wyłącznie dla {system_name}", "resolution": f"Rozwiązanie wyłącznie dla {system_name}"},
+            ),
+            201,
+        )
+    zzl_cases = require(session.get(BASE + "/api/v1/cases", params={"program_id": system_ids["ZZL"]}), 200)["cases"]
+    zzl_case_ids = {row["id"] for row in zzl_cases}
+    assert created_cases["ZZL"]["id"] in zzl_case_ids
+    assert created_cases["ASW"]["id"] not in zzl_case_ids
     ticket = require(
         session.post(
             BASE + "/api/v1/tickets",
@@ -147,6 +165,13 @@ def main() -> None:
         headers={"X-CSRF-Token": tech_login["csrf_token"]},
     )
     assert forbidden.status_code == 403, forbidden.text
+    forbidden_case = technician.post(
+        BASE + "/api/v1/cases",
+        headers={"X-CSRF-Token": tech_login["csrf_token"]},
+        json={"program_id": system_ids["ZZL"], "title": "Niedozwolony przypadek", "ticket_description": "Technik nie może dodać tego przypadku", "resolution": "Ta operacja musi zostać odrzucona"},
+    )
+    assert forbidden_case.status_code == 403, forbidden_case.text
+    assert technician.get(BASE + "/cases", timeout=10).status_code == 403
     print(f"integration smoke passed: ticket={ticket_id}")
 
 
