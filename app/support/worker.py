@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, socket, time, uuid
+import json, math, os, socket, time, uuid
 import requests
 from .checkpoints import encrypt
 from .config import settings
@@ -9,6 +9,12 @@ from .security import anonymize
 from .workflow import interpret_locally
 
 WORKER=f"{socket.gethostname()}:{os.getpid()}"
+
+def json_safe(value):
+    if isinstance(value,float) and not math.isfinite(value): return None
+    if isinstance(value,dict): return {key:json_safe(item) for key,item in value.items()}
+    if isinstance(value,list): return [json_safe(item) for item in value]
+    return value
 
 def claim():
     with connect() as conn, conn.cursor() as cur:
@@ -42,7 +48,7 @@ def process(job):
             vector=embedding(ticket["description"]); candidates=retrieve(cur,ticket,vector); scores=rerank(ticket["description"],[x["chunk_text"] for x in candidates])
             for row,score in zip(candidates,scores): row["rerank_score"]=score
             candidates=sorted(candidates,key=lambda x:x["rerank_score"],reverse=True)[:8]
-            state.update(step="problem_decision",sources=[{**x,"chunk_text":anonymize(x["chunk_text"])} for x in candidates]); status="awaiting_problem_decision"
+            state.update(step="problem_decision",sources=json_safe([{**x,"chunk_text":anonymize(x["chunk_text"])} for x in candidates])); status="awaiting_problem_decision"
         cur.execute("UPDATE support.tickets SET status=%s,recognized=%s::jsonb,missing_fields=%s::jsonb,workflow_state=%s::jsonb,updated_at=now() WHERE id=%s",(status,json.dumps(recognized),json.dumps(recognized["missing"]),json.dumps(state),ticket["id"]))
         cur.execute("INSERT INTO support.workflow_checkpoints(ticket_id,encrypted_state,step) VALUES(%s,%s,%s) ON CONFLICT(ticket_id) DO UPDATE SET encrypted_state=excluded.encrypted_state,step=excluded.step,updated_at=now()",(ticket["id"],encrypt(state),state["step"]))
         cur.execute("UPDATE support.support_jobs SET status='done',updated_at=now(),last_error=NULL WHERE id=%s",(job["id"],))

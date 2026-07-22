@@ -45,7 +45,15 @@ services:
 
   reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    command: ["--model-id", "Alibaba-NLP/gte-multilingual-reranker-base"]
+    command:
+      - "--model-id"
+      - "Alibaba-NLP/gte-multilingual-reranker-base"
+      - "--max-batch-tokens"
+      - "2048"
+      - "--max-concurrent-requests"
+      - "32"
+      - "--max-client-batch-size"
+      - "20"
     volumes:
       - reranker_cache:/data
     environment:
@@ -112,6 +120,11 @@ services:
         condition: service_started
     entrypoint: ["/bin/sh", "-c"]
     command: ["alembic upgrade head && uvicorn support.web:app --host 0.0.0.0 --port 8081"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=5)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
 
   support-worker:
     build:
@@ -132,6 +145,11 @@ services:
         condition: service_healthy
     entrypoint: ["python", "-m"]
     command: ["support.worker"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from support.db import connect; c=connect(); c.execute('SELECT 1'); c.close()"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
 
 volumes:
   postgres_data:

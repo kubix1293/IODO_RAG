@@ -8,4 +8,4 @@
 - Anonimizacja: źródła przekazywane do UI są redagowane; test obejmuje e-mail, telefon i identyfikatory.
 - Audyt: wszystkie modyfikujące operacje zapisują aktora, akcję, encję i metadane.
 
-Przed pilotem należy ustawić losowe `SUPPORT_SESSION_SECRET`, `SUPPORT_CHECKPOINT_KEY`, zmienić hasło bootstrap i wystawić panel wyłącznie przez HTTPS/VPN.
+Przed pilotem należy ustawić losowe `SUPPORT_SESSION_SECRET`, zgodne `SUPPORT_CHECKPOINT_KEY` i `LANGGRAPH_AES_KEY`, zmienić hasło bootstrap i wystawić panel wyłącznie przez HTTPS/VPN.

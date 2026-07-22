@@ -1,6 +1,7 @@
 from support.ranking import effectiveness,total
 from support.security import anonymize
 from support.workflow import interpret_locally,validate_feedback
+from support.worker import json_safe
 
 def test_ranking_weights(): assert total(1,1,1)==1
 def test_effectiveness_has_prior(): assert effectiveness(1,0,0)<1
@@ -14,3 +15,4 @@ def test_feedback_validation():
 def test_interpretation():
     result=interpret_locally("Błąd ERR-1234 w wersji 2.4.1 podczas zapisu")
     assert result["error_code"] and result["version"]=="2.4.1"
+def test_non_finite_scores_are_json_safe(): assert json_safe({"score":float("nan")})=={"score":None}

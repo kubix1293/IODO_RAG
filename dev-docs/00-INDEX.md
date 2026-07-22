@@ -10,4 +10,5 @@ Status: fundament v1 zaimplementowany. Panel działa niezależnie na `:8081`; pi
 - [Operacje](OPERATIONS.md)
 - [Testowanie](TESTING.md)
 - [Roadmapa](ROADMAP.md)
+- [Plan kolejnych kroków](NEXT_STEPS.md)
 - [ADR-001](adr/001-separate-support-panel.md)
