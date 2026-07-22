@@ -8,3 +8,5 @@ browser -> support-web -> PostgreSQL <- support-worker
 ```
 
 Awaria modelu zmienia zadanie i zgłoszenie na `failed_retryable`. Stan etapów jest szyfrowany w `workflow_checkpoints`; `ticket_id` jest identyfikatorem wątku.
+
+Worker łączy fragmenty dokumentacji technicznej i zatwierdzone przypadki historyczne. Kandydaci są ograniczani przez system i klienta, rerankowani, a osiem najlepszych trafień stanowi kontekst odpowiedzi Ollamy. Raport realizacji może zostać opublikowany przez seniora jako rozwiązanie dostępne następnym zgłoszeniom.

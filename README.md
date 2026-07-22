@@ -128,3 +128,20 @@ Recommended next additions:
 - `docs/OPERATIONS.md`: operational commands and troubleshooting
 - `docs/NEXT_STEPS.md`: recommended next implementation steps
 - `docs/WORKFLOW.md`: documentation workflow for future project changes
+
+## Service support panel
+
+The separate support panel runs on port `8081` and uses `support-web`, `support-worker`, Ollama, TEI and the GTE reranker. Start it with:
+
+```bash
+docker compose up -d postgres tei ollama reranker support-web support-worker
+```
+
+Current support documentation:
+
+- `dev-docs/00-INDEX.md`: architecture and implementation documentation index;
+- `dev-docs/PANEL_GUIDE.md`: operator guide for tickets, model suggestions, feedback and knowledge publication;
+- `dev-docs/OPERATIONS.md`: deployment, migrations, health and backup;
+- `dev-docs/SECURITY.md`: roles, sessions, CSRF and tenant/system isolation;
+- `dev-docs/TESTING.md`: unit, integration and evaluation requirements;
+- `dev-docs/NEXT_STEPS.md`: current execution status and upcoming pilot work.

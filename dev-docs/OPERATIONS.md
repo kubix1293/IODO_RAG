@@ -8,4 +8,6 @@
 
 Reranker ma ograniczony budżet batcha (`2048` tokenów, 32 równoległe żądania), aby model GTE mieścił się na hoście z 8 GiB RAM. Zmianę limitów należy poprzedzić pomiarem pamięci i czasu odpowiedzi.
 
+Odpowiedź asystenta ma limit 500 tokenów. Na obecnym CPU generowanie może trwać około dwóch minut; ekran zgłoszenia automatycznie odświeża status zadania.
+
 Backup musi obejmować bazę PostgreSQL i `/data/support-uploads`. Odtworzenie należy ćwiczyć przed pilotem. Worker jest bezstanowy i może mieć wiele replik.
