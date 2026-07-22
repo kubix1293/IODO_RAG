@@ -10,6 +10,10 @@ from .workflow import interpret_locally
 
 WORKER=f"{socket.gethostname()}:{os.getpid()}"
 
+def enrich_description(description:str,answers:dict)->str:
+    context="\n".join(f"{key}: {value}" for key,value in answers.items() if str(value).strip())
+    return description+(f"\nUzupełnienia serwisanta:\n{context}" if context else "")
+
 def json_safe(value):
     if isinstance(value,float) and not math.isfinite(value): return None
     if isinstance(value,uuid.UUID): return str(value)
@@ -56,15 +60,18 @@ ZGŁOSZENIE:\n{query}\n\nŹRÓDŁA:\n{context or 'Brak trafnych źródeł.'}"""
 def process(job):
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM support.tickets WHERE id=%s FOR UPDATE",(job["ticket_id"],)); ticket=dict(cur.fetchone())
-        state=dict(ticket["workflow_state"] or {}); recognized=interpret_locally(ticket["description"]); state["recognized"]=recognized
+        state=dict(ticket["workflow_state"] or {}); answers=state.get("answers") or {}
+        effective_description=enrich_description(ticket["description"],answers)
+        recognized=interpret_locally(effective_description); state["recognized"]=recognized; state["effective_description"]=effective_description
         if recognized["missing"] and not state.get("answers"):
             status="needs_information"; state["step"]="clarification"; state["questions"]=[f"Uzupełnij: {x}" for x in recognized["missing"]]
         else:
-            vector=embedding(ticket["description"]); candidates=retrieve(cur,ticket,vector); scores=rerank(ticket["description"],[x["chunk_text"] for x in candidates])
+            search_ticket={**ticket,"description":effective_description}
+            vector=embedding(effective_description); candidates=retrieve(cur,search_ticket,vector); scores=rerank(effective_description,[x["chunk_text"] for x in candidates])
             for row,score in zip(candidates,scores): row["rerank_score"]=score
             candidates=sorted(candidates,key=lambda x:x["rerank_score"],reverse=True)[:8]
             safe_candidates=json_safe([{**x,"chunk_text":anonymize(x["chunk_text"])} for x in candidates])
-            answer=propose_answer(ticket["description"],safe_candidates)
+            answer=propose_answer(effective_description,safe_candidates)
             state.update(step="problem_decision",sources=safe_candidates,proposed_answer=answer); status="awaiting_problem_decision"
         cur.execute("UPDATE support.tickets SET status=%s,recognized=%s::jsonb,missing_fields=%s::jsonb,workflow_state=%s::jsonb,updated_at=now() WHERE id=%s",(status,json.dumps(recognized),json.dumps(recognized["missing"]),json.dumps(state),ticket["id"]))
         cur.execute("INSERT INTO support.workflow_checkpoints(ticket_id,encrypted_state,step) VALUES(%s,%s,%s) ON CONFLICT(ticket_id) DO UPDATE SET encrypted_state=excluded.encrypted_state,step=excluded.step,updated_at=now()",(ticket["id"],encrypt(state),state["step"]))

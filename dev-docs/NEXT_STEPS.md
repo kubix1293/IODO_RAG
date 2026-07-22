@@ -80,3 +80,4 @@ Kryterium odbioru: zakończony przegląd pilotażu i udokumentowana decyzja doty
 - 2026-07-22: dodano systemy ZZL i ASW oraz formularz `/cases` dla seniora/admina. Test potwierdził, że lista ZZL nie zwraca przypadku ASW, a technik otrzymuje 403.
 - 2026-07-22: dodano formularz `/tickets/new` dla ręcznych zgłoszeń i `/knowledge` dla systemowego importu PDF/DOCX. Dokumentacja jest indeksowana i dostępna retrievalowi wyłącznie w swoim systemie oraz zakresie klienta.
 - 2026-07-22: dodano stanowisko `/tickets/{id}/view`: odpowiedź Ollamy ze źródłami, raport realizacji, ocenę podpowiedzi oraz publikację faktycznej metody przez seniora do wiedzy systemu.
+- 2026-07-22: uzupełniono UX analizy o animację `queued/running`, widoczne pytania `needs_information`, formularz uzupełnień i wznowienie z przekazaniem odpowiedzi do modelu.

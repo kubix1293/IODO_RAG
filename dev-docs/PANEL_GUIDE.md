@@ -27,6 +27,8 @@ Lista spraw znajduje się pod `/tickets`, a szczegóły pod `/tickets/{id}/view`
 
 Przycisk **Uruchom / ponów analizę modelu** tworzy trwałe zadanie. Ekran odświeża się podczas pracy. Na obecnym CPU odpowiedź o limicie 500 tokenów może powstawać około dwóch minut.
 
+Podczas `queued` i `running` panel pokazuje animowany komunikat o wyszukiwaniu źródeł i przygotowaniu odpowiedzi. Jeżeli workflow przejdzie do `needs_information`, ekran wyświetla brakujące pola. Wpisz wartości (albo jawnie „brak”/„nieznana”) i wybierz **Uzupełnij i wznów analizę**. Dane zostaną dołączone do opisu używanego przez retrieval i model.
+
 ## Jak powstaje podpowiedź
 
 Worker wykonuje:
