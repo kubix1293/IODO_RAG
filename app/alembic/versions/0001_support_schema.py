@@ -1,0 +1,39 @@
+"""Initial support schema."""
+from alembic import op
+revision = "0001_support"
+down_revision = None
+branch_labels = None
+depends_on = None
+
+def upgrade():
+    op.execute(r"""
+    CREATE EXTENSION IF NOT EXISTS vector; CREATE SCHEMA IF NOT EXISTS support;
+    DO $$ BEGIN CREATE TYPE support.user_role AS ENUM ('technician','senior_technician','admin'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE TYPE support.ticket_status AS ENUM ('new','needs_information','awaiting_problem_decision','ready','in_progress','awaiting_feedback','closed','failed_retryable'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE TYPE support.solution_status AS ENUM ('draft','approved','retired','rejected'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    CREATE TABLE support.users(id bigserial PRIMARY KEY,username text UNIQUE NOT NULL,password_hash text NOT NULL,role support.user_role NOT NULL DEFAULT 'technician',active boolean NOT NULL DEFAULT true,created_at timestamptz NOT NULL DEFAULT now(),last_login_at timestamptz);
+    CREATE TABLE support.sessions(id uuid PRIMARY KEY,user_id bigint NOT NULL REFERENCES support.users ON DELETE CASCADE,csrf_token text NOT NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),last_seen_at timestamptz NOT NULL DEFAULT now(),ip_hash text,user_agent text);
+    CREATE TABLE support.programs(id bigserial PRIMARY KEY,name text UNIQUE NOT NULL,description text,active boolean NOT NULL DEFAULT true,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.client_installations(id bigserial PRIMARY KEY,client_id bigint NOT NULL REFERENCES public.clients,program_id bigint NOT NULL REFERENCES support.programs,version text,environment text,configuration jsonb NOT NULL DEFAULT '{}',active boolean NOT NULL DEFAULT true,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.client_notes(id bigserial PRIMARY KEY,installation_id bigint NOT NULL REFERENCES support.client_installations ON DELETE CASCADE,body text NOT NULL,severity text NOT NULL DEFAULT 'info',created_by bigint REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now(),retired_at timestamptz);
+    CREATE TABLE support.tickets(id uuid PRIMARY KEY,client_id bigint NOT NULL REFERENCES public.clients,program_id bigint NOT NULL REFERENCES support.programs,installation_id bigint REFERENCES support.client_installations,description text NOT NULL,status support.ticket_status NOT NULL DEFAULT 'new',owner_id bigint REFERENCES support.users,recognized jsonb NOT NULL DEFAULT '{}',missing_fields jsonb NOT NULL DEFAULT '[]',workflow_state jsonb NOT NULL DEFAULT '{}',created_by bigint NOT NULL REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),closed_at timestamptz);
+    CREATE TABLE support.canonical_problems(id bigserial PRIMARY KEY,program_id bigint NOT NULL REFERENCES support.programs,title text NOT NULL,normalized_description text NOT NULL,error_codes text[] NOT NULL DEFAULT '{}',embedding vector(384),created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.ticket_problem_links(id bigserial PRIMARY KEY,ticket_id uuid NOT NULL REFERENCES support.tickets ON DELETE CASCADE,problem_id bigint NOT NULL REFERENCES support.canonical_problems,confidence real,status text NOT NULL DEFAULT 'proposed',decided_by bigint REFERENCES support.users,decided_at timestamptz,UNIQUE(ticket_id,problem_id));
+    CREATE TABLE support.solutions(id bigserial PRIMARY KEY,problem_id bigint NOT NULL REFERENCES support.canonical_problems,client_id bigint REFERENCES public.clients,version int NOT NULL DEFAULT 1,title text NOT NULL,summary text NOT NULL,status support.solution_status NOT NULL DEFAULT 'draft',success_count int NOT NULL DEFAULT 0,partial_count int NOT NULL DEFAULT 0,failure_count int NOT NULL DEFAULT 0,created_by bigint REFERENCES support.users,approved_by bigint REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now(),approved_at timestamptz);
+    CREATE TABLE support.solution_steps(id bigserial PRIMARY KEY,solution_id bigint NOT NULL REFERENCES support.solutions ON DELETE CASCADE,position int NOT NULL,instruction text NOT NULL,warning text,expected_result text,UNIQUE(solution_id,position));
+    CREATE TABLE support.resolution_attempts(id uuid PRIMARY KEY,ticket_id uuid NOT NULL REFERENCES support.tickets ON DELETE CASCADE,solution_id bigint REFERENCES support.solutions,position int NOT NULL,rerank_score real,compatibility_score real,effectiveness_score real,total_score real,mode text,final_outcome text,created_at timestamptz NOT NULL DEFAULT now(),finalized_at timestamptz,UNIQUE(ticket_id,position));
+    CREATE UNIQUE INDEX one_final_attempt_per_ticket ON support.resolution_attempts(ticket_id) WHERE final_outcome IS NOT NULL;
+    CREATE TABLE support.step_results(id bigserial PRIMARY KEY,attempt_id uuid NOT NULL REFERENCES support.resolution_attempts ON DELETE CASCADE,step_id bigint NOT NULL REFERENCES support.solution_steps, result text NOT NULL,successful boolean,created_by bigint NOT NULL REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(attempt_id,step_id));
+    CREATE TABLE support.feedback(id bigserial PRIMARY KEY,attempt_id uuid UNIQUE NOT NULL REFERENCES support.resolution_attempts,outcome text NOT NULL CHECK(outcome IN ('helped','partially_helped','not_helped')),comment text,validation text NOT NULL DEFAULT 'pending',validation_reason text,created_by bigint NOT NULL REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.knowledge_documents(id bigserial PRIMARY KEY,program_id bigint NOT NULL REFERENCES support.programs,client_id bigint REFERENCES public.clients,scope text NOT NULL CHECK(scope IN ('global','client')),source_file text NOT NULL,title text,sha256 text NOT NULL,created_by bigint REFERENCES support.users,created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.knowledge_chunks(id bigserial PRIMARY KEY,document_id bigint NOT NULL REFERENCES support.knowledge_documents ON DELETE CASCADE,chunk_index int NOT NULL,chunk_text text NOT NULL,metadata jsonb NOT NULL DEFAULT '{}',embedding vector(384) NOT NULL,search_tsv tsvector GENERATED ALWAYS AS(to_tsvector('simple',chunk_text)) STORED,UNIQUE(document_id,chunk_index));
+    CREATE INDEX support_chunks_vector_idx ON support.knowledge_chunks USING hnsw(embedding vector_cosine_ops); CREATE INDEX support_chunks_text_idx ON support.knowledge_chunks USING gin(search_tsv);
+    CREATE TABLE support.solution_evidence(id bigserial PRIMARY KEY,solution_id bigint NOT NULL REFERENCES support.solutions ON DELETE CASCADE,chunk_id bigint REFERENCES support.knowledge_chunks,ticket_id uuid REFERENCES support.tickets,note text);
+    CREATE TABLE support.support_jobs(id uuid PRIMARY KEY,ticket_id uuid NOT NULL REFERENCES support.tickets ON DELETE CASCADE,kind text NOT NULL,status text NOT NULL DEFAULT 'queued',payload jsonb NOT NULL DEFAULT '{}',attempts int NOT NULL DEFAULT 0,available_at timestamptz NOT NULL DEFAULT now(),locked_at timestamptz,locked_by text,last_error text,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+    CREATE INDEX support_jobs_claim_idx ON support.support_jobs(status,available_at);
+    CREATE TABLE support.audit_events(id bigserial PRIMARY KEY,actor_id bigint REFERENCES support.users,action text NOT NULL,entity_type text NOT NULL,entity_id text NOT NULL,details jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE support.workflow_checkpoints(ticket_id uuid PRIMARY KEY REFERENCES support.tickets ON DELETE CASCADE,encrypted_state bytea NOT NULL,step text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
+    """)
+
+def downgrade():
+    op.execute("DROP SCHEMA IF EXISTS support CASCADE")

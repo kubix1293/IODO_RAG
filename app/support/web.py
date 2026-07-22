@@ -1,0 +1,177 @@
+from __future__ import annotations
+import hashlib, json, os, shutil, uuid
+from pathlib import Path
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from iodo_rag.chunking import split_into_chunks
+from iodo_rag.embeddings import EmbeddingClient
+from iodo_rag.parsers import parse_document
+from iodo_rag.vector import to_pgvector
+from .config import settings
+from .db import audit, connect, create_session, session_user
+from .security import anonymize, hash_password, ip_hash, require_role, token, verify_password
+from .workflow import validate_feedback
+
+app=FastAPI(title="IODO Support",version="1.0.0")
+
+class Login(BaseModel): username:str; password:str
+class TicketCreate(BaseModel): client_id:int; program_id:int; installation_id:int|None=None; description:str=Field(min_length=10)
+class Resume(BaseModel): answers:dict={}
+class ProblemLink(BaseModel): problem_id:int; decision:str=Field(pattern="^(confirmed|rejected)$")
+class ResolutionMode(BaseModel): attempt_id:uuid.UUID; mode:str=Field(pattern="^(full|interactive)$")
+class StepResult(BaseModel): attempt_id:uuid.UUID; result:str; successful:bool|None=None
+class FeedbackIn(BaseModel): attempt_id:uuid.UUID; outcome:str; comment:str|None=None
+class CloseIn(BaseModel): final_attempt_id:uuid.UUID|None=None
+
+def user(request:Request):
+    found=session_user(request.cookies.get("support_session"))
+    if not found: raise HTTPException(401,"Wymagane logowanie")
+    return dict(found)
+
+def csrf(request:Request, current=Depends(user), x_csrf_token:str|None=Header(None)):
+    if not x_csrf_token or x_csrf_token != current["csrf_token"]: raise HTTPException(403,"Nieprawidłowy CSRF token")
+    return current
+
+@app.on_event("startup")
+def bootstrap():
+    username=os.getenv("SUPPORT_BOOTSTRAP_USER"); password=os.getenv("SUPPORT_BOOTSTRAP_PASSWORD")
+    if not username or not password: return
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM support.users LIMIT 1")
+        if not cur.fetchone():
+            cur.execute("INSERT INTO support.users(username,password_hash,role) VALUES(%s,%s,'admin')",(username,hash_password(password)))
+
+@app.get("/health")
+def health(): return {"status":"ok"}
+
+@app.get("/",response_class=HTMLResponse)
+def index(request:Request):
+    current=session_user(request.cookies.get("support_session"))
+    if not current: return "<h1>IODO Support</h1><p>Zaloguj się przez <code>POST /api/v1/auth/login</code>. Dokumentacja: <a href='/docs'>/docs</a></p>"
+    return f"<h1>IODO Support</h1><p>Zalogowany: {current['username']} ({current['role']})</p><p>API: <a href='/docs'>/docs</a></p>"
+
+@app.post("/api/v1/auth/login")
+def login(body:Login,request:Request,response:Response):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,username,password_hash,role,active FROM support.users WHERE username=%s",(body.username,)); found=cur.fetchone()
+        if not found or not found["active"] or not verify_password(found["password_hash"],body.password): raise HTTPException(401,"Błędne dane logowania")
+        csrf_value=token(); sid,expires=create_session(cur,found["id"],csrf_value,ip_hash(request.client.host if request.client else "",settings.session_secret),request.headers.get("user-agent",""))
+        cur.execute("UPDATE support.users SET last_login_at=now() WHERE id=%s",(found["id"],)); audit(cur,found["id"],"login","session",sid)
+    response.set_cookie("support_session",str(sid),httponly=True,samesite="strict",secure=request.url.scheme=="https",expires=expires)
+    return {"user":{"id":found["id"],"username":found["username"],"role":found["role"]},"csrf_token":csrf_value}
+
+@app.post("/api/v1/auth/logout",status_code=204)
+def logout(request:Request,response:Response,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        sid=request.cookies.get("support_session"); audit(cur,current["id"],"logout","session",sid); cur.execute("DELETE FROM support.sessions WHERE id=%s",(sid,))
+    response.delete_cookie("support_session")
+
+@app.post("/api/v1/tickets",status_code=201)
+def create_ticket(body:TicketCreate,current=Depends(csrf)):
+    ticket_id=uuid.uuid4()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO support.tickets(id,client_id,program_id,installation_id,description,owner_id,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *",(ticket_id,body.client_id,body.program_id,body.installation_id,body.description,current["id"],current["id"])); row=cur.fetchone(); audit(cur,current["id"],"create","ticket",ticket_id)
+    return row
+
+@app.get("/api/v1/tickets/{ticket_id}")
+def get_ticket(ticket_id:uuid.UUID,current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT t.*,c.name client_name,p.name program_name FROM support.tickets t JOIN public.clients c ON c.id=t.client_id JOIN support.programs p ON p.id=t.program_id WHERE t.id=%s",(ticket_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(404,"Nie znaleziono zgłoszenia")
+        cur.execute("SELECT severity,body FROM support.client_notes n JOIN support.client_installations i ON i.id=n.installation_id WHERE i.id=%s AND n.retired_at IS NULL",(row["installation_id"],)); row["client_notes"]=cur.fetchall()
+        return row
+
+@app.post("/api/v1/tickets/{ticket_id}/analysis/start",status_code=202)
+def start(ticket_id:uuid.UUID,current=Depends(csrf)):
+    job=uuid.uuid4()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM support.tickets WHERE id=%s FOR UPDATE",(ticket_id,))
+        if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono zgłoszenia")
+        cur.execute("INSERT INTO support.support_jobs(id,ticket_id,kind) VALUES(%s,%s,'analysis')",(job,ticket_id)); audit(cur,current["id"],"analysis_start","ticket",ticket_id,{"job_id":str(job)})
+    return {"job_id":job,"status":"queued"}
+
+@app.get("/api/v1/tickets/{ticket_id}/workflow")
+def workflow(ticket_id:uuid.UUID,current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status,recognized,missing_fields,workflow_state FROM support.tickets WHERE id=%s",(ticket_id,)); ticket=cur.fetchone()
+        if not ticket: raise HTTPException(404)
+        cur.execute("SELECT id,kind,status,attempts,last_error,updated_at FROM support.support_jobs WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1",(ticket_id,)); ticket["job"]=cur.fetchone()
+        return ticket
+
+@app.post("/api/v1/tickets/{ticket_id}/workflow/resume",status_code=202)
+def resume(ticket_id:uuid.UUID,body:Resume,current=Depends(csrf)):
+    job=uuid.uuid4()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE support.tickets SET workflow_state=workflow_state||%s::jsonb,status='new',updated_at=now() WHERE id=%s",(json.dumps({"answers":body.answers}),ticket_id))
+        if not cur.rowcount: raise HTTPException(404)
+        cur.execute("INSERT INTO support.support_jobs(id,ticket_id,kind,payload) VALUES(%s,%s,'resume',%s::jsonb)",(job,ticket_id,json.dumps(body.answers))); audit(cur,current["id"],"workflow_resume","ticket",ticket_id)
+    return {"job_id":job,"status":"queued"}
+
+@app.post("/api/v1/tickets/{ticket_id}/problem-link")
+def link_problem(ticket_id:uuid.UUID,body:ProblemLink,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO support.ticket_problem_links(ticket_id,problem_id,status,decided_by,decided_at) VALUES(%s,%s,%s,%s,now()) ON CONFLICT(ticket_id,problem_id) DO UPDATE SET status=excluded.status,decided_by=excluded.decided_by,decided_at=now()",(ticket_id,body.problem_id,body.decision,current["id"])); cur.execute("UPDATE support.tickets SET status=CASE WHEN %s='confirmed' THEN 'ready'::support.ticket_status ELSE 'awaiting_problem_decision'::support.ticket_status END WHERE id=%s",(body.decision,ticket_id)); audit(cur,current["id"],"problem_link","ticket",ticket_id,body.model_dump())
+    return {"status":body.decision}
+
+@app.post("/api/v1/tickets/{ticket_id}/resolution-mode")
+def mode(ticket_id:uuid.UUID,body:ResolutionMode,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE support.resolution_attempts SET mode=%s WHERE id=%s AND ticket_id=%s",(body.mode,body.attempt_id,ticket_id));
+        if not cur.rowcount: raise HTTPException(404)
+        cur.execute("UPDATE support.tickets SET status='in_progress' WHERE id=%s",(ticket_id,)); audit(cur,current["id"],"resolution_mode","ticket",ticket_id,{"mode":body.mode})
+    return {"mode":body.mode}
+
+@app.post("/api/v1/tickets/{ticket_id}/steps/{step_id}/result")
+def step_result(ticket_id:uuid.UUID,step_id:int,body:StepResult,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO support.step_results(attempt_id,step_id,result,successful,created_by) SELECT %s,%s,%s,%s,%s WHERE EXISTS(SELECT 1 FROM support.resolution_attempts WHERE id=%s AND ticket_id=%s) ON CONFLICT(attempt_id,step_id) DO UPDATE SET result=excluded.result,successful=excluded.successful",(body.attempt_id,step_id,body.result,body.successful,current["id"],body.attempt_id,ticket_id));
+        if not cur.rowcount: raise HTTPException(404)
+        audit(cur,current["id"],"step_result","ticket",ticket_id,{"step_id":step_id})
+    return {"saved":True}
+
+@app.post("/api/v1/tickets/{ticket_id}/feedback")
+def feedback(ticket_id:uuid.UUID,body:FeedbackIn,current=Depends(csrf)):
+    validation,reason=validate_feedback(body.outcome,body.comment)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO support.feedback(attempt_id,outcome,comment,validation,validation_reason,created_by) SELECT %s,%s,%s,%s,%s,%s WHERE EXISTS(SELECT 1 FROM support.resolution_attempts WHERE id=%s AND ticket_id=%s) ON CONFLICT(attempt_id) DO UPDATE SET outcome=excluded.outcome,comment=excluded.comment,validation=excluded.validation,validation_reason=excluded.validation_reason",(body.attempt_id,body.outcome,body.comment,validation,reason,current["id"],body.attempt_id,ticket_id));
+        if not cur.rowcount: raise HTTPException(404)
+        cur.execute("UPDATE support.tickets SET status='awaiting_feedback' WHERE id=%s",(ticket_id,)); audit(cur,current["id"],"feedback","ticket",ticket_id,{"validation":validation})
+    return {"validation":validation,"reason":reason}
+
+@app.post("/api/v1/tickets/{ticket_id}/close")
+def close(ticket_id:uuid.UUID,body:CloseIn,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT f.outcome,f.validation,a.solution_id FROM support.feedback f JOIN support.resolution_attempts a ON a.id=f.attempt_id WHERE a.ticket_id=%s AND (%s::uuid IS NULL OR a.id=%s)",(ticket_id,body.final_attempt_id,body.final_attempt_id)); feedback_row=cur.fetchone()
+        if not feedback_row or feedback_row["validation"] != "consistent": raise HTTPException(409,"Feedback musi być kompletny i spójny")
+        cur.execute("UPDATE support.resolution_attempts SET final_outcome=%s,finalized_at=now() WHERE id=%s",(feedback_row["outcome"],body.final_attempt_id)); column={"helped":"success_count","partially_helped":"partial_count","not_helped":"failure_count"}[feedback_row["outcome"]]; cur.execute(f"UPDATE support.solutions SET {column}={column}+1 WHERE id=%s AND status='approved'",(feedback_row["solution_id"],)); cur.execute("UPDATE support.tickets SET status='closed',closed_at=now(),updated_at=now() WHERE id=%s",(ticket_id,)); audit(cur,current["id"],"close","ticket",ticket_id)
+    return {"status":"closed"}
+
+@app.post("/api/v1/knowledge/documents",status_code=202)
+def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):
+    if scope not in {"global","client"} or (scope=="client" and not client_id): raise HTTPException(422,"Nieprawidłowy zakres")
+    suffix=Path(file.filename or "").suffix.lower()
+    if suffix not in {".pdf",".docx"}: raise HTTPException(415,"Obsługiwane są PDF i DOCX")
+    root=Path(settings.upload_root); root.mkdir(parents=True,exist_ok=True); target=root/f"{uuid.uuid4()}{suffix}"
+    with target.open("wb") as out: shutil.copyfileobj(file.file,out)
+    digest=hashlib.sha256(target.read_bytes()).hexdigest()
+    text,_,_=parse_document(target)
+    chunks=split_into_chunks(text,target_chars=1100,overlap_chars=150)
+    vectors=EmbeddingClient(settings.embedding_url,384).embed([str(x["text"]) for x in chunks])
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO support.knowledge_documents(program_id,client_id,scope,source_file,title,sha256,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",(program_id,client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"])); doc=cur.fetchone()["id"]; audit(cur,current["id"],"knowledge_upload","knowledge_document",doc)
+        for index,(chunk,vector) in enumerate(zip(chunks,vectors)):
+            cur.execute("INSERT INTO support.knowledge_chunks(document_id,chunk_index,chunk_text,metadata,embedding) VALUES(%s,%s,%s,%s::jsonb,%s::vector)",(doc,index,chunk["text"],json.dumps(chunk.get("metadata",{})),to_pgvector(vector)))
+    return {"document_id":doc,"status":"indexed","chunks":len(chunks)}
+
+@app.post("/api/v1/solutions/{solution_id}/approve")
+def approve(solution_id:int,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur: cur.execute("UPDATE support.solutions SET status='approved',approved_by=%s,approved_at=now() WHERE id=%s AND status='draft'",(current["id"],solution_id)); audit(cur,current["id"],"approve","solution",solution_id)
+    return {"status":"approved"}
+
+@app.post("/api/v1/solutions/{solution_id}/reject")
+def reject(solution_id:int,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur: cur.execute("UPDATE support.solutions SET status='rejected' WHERE id=%s AND status='draft'",(solution_id,)); audit(cur,current["id"],"reject","solution",solution_id)
+    return {"status":"rejected"}

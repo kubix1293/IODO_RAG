@@ -43,6 +43,19 @@ services:
       timeout: 10s
       retries: 20
 
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command: ["--model-id", "Alibaba-NLP/gte-multilingual-reranker-base"]
+    volumes:
+      - reranker_cache:/data
+    environment:
+      HF_HOME: /data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 30
+
   app:
     build:
       context: ./app
@@ -80,7 +93,48 @@ services:
     entrypoint: ["uvicorn"]
     command: ["iodo_rag.web:app", "--host", "0.0.0.0", "--port", "8000"]
 
+  support-web:
+    build:
+      context: ./app
+    env_file: [.env]
+    environment:
+      RERANKER_URL: http://reranker:80
+    volumes:
+      - ./data:/data
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tei:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["alembic upgrade head && uvicorn support.web:app --host 0.0.0.0 --port 8081"]
+
+  support-worker:
+    build:
+      context: ./app
+    env_file: [.env]
+    environment:
+      RERANKER_URL: http://reranker:80
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      tei:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+      reranker:
+        condition: service_healthy
+    entrypoint: ["python", "-m"]
+    command: ["support.worker"]
+
 volumes:
   postgres_data:
   hf_cache:
   ollama_data:
+  reranker_cache:

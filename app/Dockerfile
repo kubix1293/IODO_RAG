@@ -10,5 +10,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY iodo_rag ./iodo_rag
+COPY support ./support
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 
 ENTRYPOINT ["python", "-m", "iodo_rag.cli"]
