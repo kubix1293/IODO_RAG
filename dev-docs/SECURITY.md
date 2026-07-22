@@ -6,6 +6,7 @@
 - RBAC: technician, senior_technician, admin; publikacja wiedzy wymaga roli senior lub admin.
 - Dodawanie i przeglądanie przypadków historycznych wymaga roli senior lub admin; każdy odczyt wymaga wskazania jednego systemu.
 - Import dokumentacji technicznej wymaga roli senior lub admin. Zakres klienta wymaga jawnego `client_id`; wyszukiwanie nadal filtruje system i klienta.
+- Technik może zapisać raport realizacji i ocenę, lecz tylko senior/admin może opublikować metodę jako zatwierdzoną wiedzę systemu.
 - Izolacja: program zawsze obowiązkowy; prywatna wiedza tylko dla klienta zgłoszenia.
 - Anonimizacja: źródła przekazywane do UI są redagowane; test obejmuje e-mail, telefon i identyfikatory.
 - Audyt: wszystkie modyfikujące operacje zapisują aktora, akcję, encję i metadane.

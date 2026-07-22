@@ -12,6 +12,7 @@ WORKER=f"{socket.gethostname()}:{os.getpid()}"
 
 def json_safe(value):
     if isinstance(value,float) and not math.isfinite(value): return None
+    if isinstance(value,uuid.UUID): return str(value)
     if isinstance(value,dict): return {key:json_safe(item) for key,item in value.items()}
     if isinstance(value,list): return [json_safe(item) for item in value]
     return value
@@ -31,12 +32,26 @@ def rerank(query:str, texts:list[str]):
     scores={int(x["index"]):float(x["score"]) for x in response.json()}; return [scores.get(i,0.0) for i in range(len(texts))]
 
 def retrieve(cur,ticket,vector):
-    cur.execute("""SELECT k.id,k.chunk_text,d.title,d.client_id,1-(k.embedding<=>%s::vector) vector_score,
+    cur.execute("""SELECT k.id::text id,'documentation' kind,k.chunk_text,d.title,d.client_id,1-(k.embedding<=>%s::vector) vector_score,
       ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s)) text_score
       FROM support.knowledge_chunks k JOIN support.knowledge_documents d ON d.id=k.document_id
       WHERE d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
-      ORDER BY GREATEST(1-(k.embedding<=>%s::vector),ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s))) DESC LIMIT 20""",
-      (vector,ticket["description"],ticket["program_id"],ticket["client_id"],vector,ticket["description"])); return [dict(x) for x in cur.fetchall()]
+      ORDER BY GREATEST(1-(k.embedding<=>%s::vector),ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s))) DESC LIMIT 12""",
+      (vector,ticket["description"],ticket["program_id"],ticket["client_id"],vector,ticket["description"])); rows=[dict(x) for x in cur.fetchall()]
+    cur.execute("""SELECT id::text id,'historical_case' kind,
+      ticket_description||E'\nRozwiązanie: '||resolution chunk_text,title,NULL::bigint client_id,
+      NULL::real vector_score,NULL::real text_score
+      FROM support.historical_cases WHERE program_id=%s AND status='approved'
+      ORDER BY created_at DESC LIMIT 8""",(ticket["program_id"],))
+    rows.extend(dict(x) for x in cur.fetchall()); return rows
+
+def propose_answer(query:str,candidates:list[dict]):
+    context="\n\n".join(f"[{index+1}] {row.get('kind')}: {row.get('title') or ''}\n{row['chunk_text'][:1400]}" for index,row in enumerate(candidates))
+    prompt=f"""Jesteś asystentem serwisowym. Na podstawie wyłącznie źródeł zaproponuj bezpieczną diagnozę i czynności. Nie twierdź, że czynność wykonano. Jeśli źródła są niewystarczające, napisz czego brakuje. Odpowiedz po polsku, numerując kroki i wskazując numery źródeł.
+
+ZGŁOSZENIE:\n{query}\n\nŹRÓDŁA:\n{context or 'Brak trafnych źródeł.'}"""
+    response=requests.post(f"{settings.llm_url}/api/generate",json={"model":settings.llm_model,"prompt":prompt,"stream":False,"options":{"temperature":0.1,"num_predict":500}},timeout=240)
+    response.raise_for_status(); return response.json().get("response","").strip()
 
 def process(job):
     with connect() as conn, conn.cursor() as cur:
@@ -48,7 +63,9 @@ def process(job):
             vector=embedding(ticket["description"]); candidates=retrieve(cur,ticket,vector); scores=rerank(ticket["description"],[x["chunk_text"] for x in candidates])
             for row,score in zip(candidates,scores): row["rerank_score"]=score
             candidates=sorted(candidates,key=lambda x:x["rerank_score"],reverse=True)[:8]
-            state.update(step="problem_decision",sources=json_safe([{**x,"chunk_text":anonymize(x["chunk_text"])} for x in candidates])); status="awaiting_problem_decision"
+            safe_candidates=json_safe([{**x,"chunk_text":anonymize(x["chunk_text"])} for x in candidates])
+            answer=propose_answer(ticket["description"],safe_candidates)
+            state.update(step="problem_decision",sources=safe_candidates,proposed_answer=answer); status="awaiting_problem_decision"
         cur.execute("UPDATE support.tickets SET status=%s,recognized=%s::jsonb,missing_fields=%s::jsonb,workflow_state=%s::jsonb,updated_at=now() WHERE id=%s",(status,json.dumps(recognized),json.dumps(recognized["missing"]),json.dumps(state),ticket["id"]))
         cur.execute("INSERT INTO support.workflow_checkpoints(ticket_id,encrypted_state,step) VALUES(%s,%s,%s) ON CONFLICT(ticket_id) DO UPDATE SET encrypted_state=excluded.encrypted_state,step=excluded.step,updated_at=now()",(ticket["id"],encrypt(state),state["step"]))
         cur.execute("UPDATE support.support_jobs SET status='done',updated_at=now(),last_error=NULL WHERE id=%s",(job["id"],))

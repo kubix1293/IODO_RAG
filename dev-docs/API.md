@@ -10,4 +10,10 @@ Przypadki historyczne:
 
 Interfejs panelu udostępnia `GET /login`, `GET /tickets/new` dla ręcznego wprowadzania zgłoszeń oraz `GET /knowledge` dla importu PDF/DOCX przez seniora/admina. Dokument jest zawsze przypisany do jednego systemu oraz zakresu globalnego albo prywatnego klienta.
 
+Stanowisko pracy zgłoszenia:
+
+- `GET /tickets` i `GET /tickets/{id}/view` — lista oraz podgląd opisu, odpowiedzi modelu i źródeł;
+- `POST /api/v1/tickets/{id}/resolution-report` — wynik realizacji, ocena 1–5 i faktyczna metoda;
+- `POST /api/v1/tickets/{id}/publish-resolution` — publikacja metody przez seniora/admina jako zatwierdzone rozwiązanie i przypadek historyczny.
+
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.

@@ -134,13 +134,15 @@ def main() -> None:
     require(session.post(f"{BASE}/api/v1/tickets/{ticket_id}/analysis/start", headers=headers, timeout=10), 202)
 
     workflow = {}
-    for _ in range(90):
+    for _ in range(240):
         workflow = require(session.get(f"{BASE}/api/v1/tickets/{ticket_id}/workflow", timeout=10), 200)
         if workflow["status"] in {"awaiting_problem_decision", "failed_retryable"}:
             break
         time.sleep(1)
     assert workflow["status"] == "awaiting_problem_decision", workflow
     assert workflow["job"]["status"] == "done"
+    assert workflow["workflow_state"].get("proposed_answer")
+    assert session.get(f"{BASE}/tickets/{ticket_id}/view", timeout=10).status_code == 200
 
     require(
         session.post(f"{BASE}/api/v1/tickets/{ticket_id}/problem-link", headers=headers, json={"problem_id": problem_id, "decision": "confirmed"}),
@@ -160,6 +162,16 @@ def main() -> None:
         session.post(f"{BASE}/api/v1/tickets/{ticket_id}/steps/{step_id}/result", headers=headers, json={"attempt_id": str(attempt_id), "result": "Uprawnienia poprawione", "successful": True}),
         200,
     )
+    report=require(
+        session.post(f"{BASE}/api/v1/tickets/{ticket_id}/resolution-report",headers=headers,json={"outcome":"helped","suggestion_rating":5,"actual_resolution":"Poprawiono uprawnienia operatora i zapis zaczął działać","comment":"Podpowiedź była trafna"}),
+        200,
+    )
+    assert report["suggestion_rating"]==5
+    published=require(
+        session.post(f"{BASE}/api/v1/tickets/{ticket_id}/publish-resolution",headers=headers,json={"title":f"Naprawa uprawnień {suffix}"}),
+        201,
+    )
+    assert published["status"]=="approved"
     result = require(
         session.post(f"{BASE}/api/v1/tickets/{ticket_id}/feedback", headers=headers, json={"attempt_id": str(attempt_id), "outcome": "helped", "comment": "Po wykonaniu kroku zapis działa poprawnie"}),
         200,
@@ -190,6 +202,8 @@ def main() -> None:
         json={"program_id": system_ids["ZZL"], "title": "Niedozwolony przypadek", "ticket_description": "Technik nie może dodać tego przypadku", "resolution": "Ta operacja musi zostać odrzucona"},
     )
     assert forbidden_case.status_code == 403, forbidden_case.text
+    forbidden_publish=technician.post(f"{BASE}/api/v1/tickets/{ticket_id}/publish-resolution",headers={"X-CSRF-Token":tech_login["csrf_token"]},json={"title":"Niedozwolona publikacja"})
+    assert forbidden_publish.status_code==403,forbidden_publish.text
     assert technician.get(BASE + "/cases", timeout=10).status_code == 403
     assert technician.get(BASE + "/tickets/new", timeout=10).status_code == 200
     assert technician.get(BASE + "/knowledge", timeout=10).status_code == 403
