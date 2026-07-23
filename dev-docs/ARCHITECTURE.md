@@ -7,6 +7,8 @@ browser -> support-web -> PostgreSQL <- support-worker
                                       -> TEI / reranker / Ollama
 ```
 
-Awaria modelu zmienia zadanie i zgłoszenie na `failed_retryable`. Stan etapów jest szyfrowany w `workflow_checkpoints`; `ticket_id` jest identyfikatorem wątku.
+Awaria modelu zmienia zadanie i zgłoszenie na `failed_retryable`. StateGraph używa szyfrowanego `PostgresSaver`, a `ticket_id` jest identyfikatorem wątku. Tabela `workflow_checkpoints` przechowuje dodatkowy kompatybilny podgląd końcowego stanu.
 
 Worker łączy fragmenty dokumentacji technicznej i zatwierdzone przypadki historyczne. Kandydaci są ograniczani przez system i klienta, rerankowani, a osiem najlepszych trafień stanowi kontekst odpowiedzi Ollamy. Raport realizacji może zostać opublikowany przez seniora jako rozwiązanie dostępne następnym zgłoszeniom.
+
+Retrieval jest rozdzielony na równoległą grupę agentów DB: `history_agent` oraz `documentation_agent`. Szczegółową topologię opisuje [AGENTS.md](AGENTS.md).

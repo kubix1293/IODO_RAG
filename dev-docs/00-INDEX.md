@@ -5,6 +5,7 @@ Status: fundament v1 zaimplementowany. Panel działa niezależnie na `:8081` i k
 - [Architektura](ARCHITECTURE.md)
 - [Model danych](DATA_MODEL.md)
 - [Procesy](WORKFLOWS.md)
+- [Orkiestracja i agenci](AGENTS.md)
 - [API](API.md)
 - [Bezpieczeństwo](SECURITY.md)
 - [Operacje](OPERATIONS.md)
