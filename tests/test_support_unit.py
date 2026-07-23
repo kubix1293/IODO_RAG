@@ -68,6 +68,35 @@ def test_support_prompt_is_technical_not_legal():
     })
     assert "SŁOWA KLUCZOWE" in prompt and "ZALECANA PROCEDURA" in prompt and "WERYFIKACJA" in prompt
     assert "Nie twórz stylu prawnego" in prompt and "Nie wypisuj numerów materiałów" in prompt
+def test_support_prompt_uses_titles_full_chunks_and_global_budget():
+    full_chunk="A"*1600
+    prompt=support_graph.build_technical_support_prompt({
+        "client_ref":"K-test","effective_description":"ERR-1234",
+        "sources":[
+            {"kind":"documentation","title":"Restart usługi","context_role":"match","chunk_text":full_chunk},
+            {"kind":"documentation","title":"Restart usługi","context_role":"neighbor","chunk_text":"kolejny krok"},
+            *[{"kind":"documentation","title":"Długi dokument","chunk_text":"B"*5000} for _ in range(8)],
+        ],
+    })
+    materials=prompt.split("MATERIAŁY TECHNICZNE:\n",1)[1]
+    assert full_chunk in materials and "TYTUŁ: Restart usługi" in materials
+    assert "fragment sąsiedni procedury" in materials
+    assert len(materials)<=support_graph.LLM_CONTEXT_MAX_CHARS+1
+def test_documentation_match_is_expanded_with_adjacent_chunks():
+    class Cursor:
+        def execute(self,query,params):
+            assert params==(7,2,4,2,11)
+        def fetchall(self):
+            return [
+                {"id":"30","kind":"documentation","document_id":7,"chunk_index":2,"chunk_text":"przed","title":"Instrukcja"},
+                {"id":"32","kind":"documentation","document_id":7,"chunk_index":4,"chunk_text":"po","title":"Instrukcja"},
+            ]
+    selected=[{"id":"31","kind":"documentation","document_id":7,"chunk_index":3,
+               "chunk_text":"trafienie","title":"Instrukcja","rerank_score":0.9}]
+    expanded=support_graph.expand_documentation_neighbors(
+        selected,{"program_id":2,"client_id":11},Cursor())
+    assert [row["chunk_index"] for row in expanded]==[2,3,4]
+    assert [row["context_role"] for row in expanded]==["neighbor","match","neighbor"]
 def test_feedback_validation():
     assert validate_feedback("not_helped","")[0]=="incomplete"
     assert validate_feedback("helped","nadal nie pomogło")[0]=="suspicious"

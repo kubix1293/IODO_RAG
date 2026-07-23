@@ -19,6 +19,9 @@ from .security import anonymize_with_report
 from .workflow import interpret_locally
 
 
+LLM_CONTEXT_MAX_CHARS = 24_000
+
+
 class SupportState(TypedDict, total=False):
     ticket_id: str
     client_id: int
@@ -135,7 +138,8 @@ def documentation_agent_node(state: SupportState):
         runtime = application_settings(cur)
         limit = min(12, runtime["retrieval_candidates"])
         cur.execute(
-            """SELECT k.id::text id,'documentation' kind,k.chunk_text,d.title,d.client_id,
+            """SELECT k.id::text id,'documentation' kind,k.document_id,k.chunk_index,
+              k.chunk_text,d.title,d.client_id,
               1-(k.embedding<=>%s::vector) vector_score,
               ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s)) text_score
               FROM support.knowledge_chunks k
@@ -161,6 +165,44 @@ def documentation_agent_node(state: SupportState):
         return {"documentation_candidates":safe,"documentation_redactions":redactions}
 
 
+def expand_documentation_neighbors(selected:list[dict],state:SupportState,cur)->list[dict]:
+    """Add the preceding and following chunks without crossing visibility boundaries."""
+    expanded=[]; included=set()
+    for row in selected:
+        if row.get("kind") != "documentation" or row.get("document_id") is None:
+            key=(row.get("kind"),str(row.get("id")))
+            if key not in included:
+                expanded.append(row); included.add(key)
+            continue
+        cur.execute(
+            """SELECT k.id::text id,'documentation' kind,k.document_id,k.chunk_index,
+              k.chunk_text,d.title,d.client_id,NULL::real vector_score,NULL::real text_score
+              FROM support.knowledge_chunks k
+              JOIN support.knowledge_documents d ON d.id=k.document_id
+              WHERE k.document_id=%s AND k.chunk_index BETWEEN %s AND %s
+                AND d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
+              ORDER BY k.chunk_index""",
+            (
+                row["document_id"],
+                max(0,int(row["chunk_index"])-1),
+                int(row["chunk_index"])+1,
+                state["program_id"],
+                state["client_id"],
+            ),
+        )
+        neighbors={int(item["chunk_index"]):dict(item) for item in cur.fetchall()}
+        neighbors[int(row["chunk_index"])]=row
+        for chunk_index in sorted(neighbors):
+            item=neighbors[chunk_index]
+            key=("documentation",str(item["id"]))
+            if key in included:
+                continue
+            item["context_role"]="match" if chunk_index==int(row["chunk_index"]) else "neighbor"
+            item["rerank_score"]=row.get("rerank_score")
+            expanded.append(item); included.add(key)
+    return expanded
+
+
 def reranking_node(state: SupportState):
     candidates = (state.get("history_candidates") or []) + (state.get("documentation_candidates") or [])
     scores = rerank(state["effective_description"], [row["chunk_text"] for row in candidates])
@@ -168,7 +210,8 @@ def reranking_node(state: SupportState):
         row["rerank_score"] = score
     with connect() as conn, conn.cursor() as cur:
         top_sources = application_settings(cur)["retrieval_top_sources"]
-    selected = sorted(candidates, key=lambda row: row["rerank_score"], reverse=True)[:top_sources]
+        selected = sorted(candidates, key=lambda row: row["rerank_score"], reverse=True)[:top_sources]
+        selected = expand_documentation_neighbors(selected,state,cur)
     safe=[]; redactions=list(state.get("privacy_redactions") or [])
     redactions.extend(state.get("history_redactions") or [])
     redactions.extend(state.get("documentation_redactions") or [])
@@ -224,10 +267,19 @@ def hybrid_llm_answer(prompt:str,runtime:dict)->tuple[str,str,str]:
 
 def build_technical_support_prompt(state:SupportState)->str:
     sources = state.get("sources") or []
-    context = "\n\n".join(
-        f"MATERIAŁ {index + 1} ({row.get('kind')}):\n{row['chunk_text'][:1400]}"
-        for index, row in enumerate(sources)
-    )
+    blocks=[]; used_chars=0
+    for index,row in enumerate(sources):
+        title=(row.get("title") or "bez tytułu").strip()
+        role="fragment sąsiedni procedury" if row.get("context_role")=="neighbor" else "trafienie"
+        header=f"MATERIAŁ {index + 1} ({row.get('kind')}, {role})\nTYTUŁ: {title}\n"
+        remaining=LLM_CONTEXT_MAX_CHARS-used_chars-len(header)
+        if remaining <= 0:
+            break
+        text=(row.get("chunk_text") or "").strip()
+        block=header+text[:remaining]
+        blocks.append(block)
+        used_chars+=len(block)+2
+    context="\n\n".join(blocks)
     return f"""Jesteś starszym inżynierem wsparcia technicznego IT. Przygotuj praktyczną podpowiedź dla serwisanta rozwiązującego zgłoszenie dotyczące aplikacji lub infrastruktury.
 
 Zasady analizy:
