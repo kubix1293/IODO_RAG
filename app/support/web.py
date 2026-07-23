@@ -15,6 +15,59 @@ from .workflow import validate_feedback
 
 app=FastAPI(title="IODO Support",version="1.0.0")
 
+DESK_STYLE="""
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap');
+:root{--bg:#EDF0EE;--surface:#fff;--ink:#1A2321;--muted:#66736E;--line:#D7DDD9;--accent:#2A5CFF;--ok:#1F9D63;--warn:#D97E0B;--crit:#DE3B3B;--violet:#7A5AF8}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink)}
+body{font:14px/1.55 Inter,system-ui,sans-serif!important;max-width:none!important;padding:0!important}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.desk-sidebar{position:fixed;inset:0 auto 0 0;width:218px;padding:25px 16px 18px;background:#18201e;color:#fff;display:flex;flex-direction:column;z-index:20}
+.desk-logo{font:700 20px Archivo,sans-serif;letter-spacing:-.5px;margin:0 8px 29px}.desk-logo span{color:#7ca0ff}
+.desk-nav{display:grid;gap:5px}.desk-nav a{color:#aeb9b5;padding:10px 12px;border-radius:8px;font-weight:600;display:flex;gap:10px;align-items:center}
+.desk-nav a:hover,.desk-nav a.active{color:#fff;background:#2a3532;text-decoration:none}.desk-nav a.active{box-shadow:inset 3px 0 var(--accent)}
+.desk-foot{margin-top:auto;border-top:1px solid #34403d;padding:17px 9px 0;color:#aeb9b5;font-size:12px}.desk-ready{display:flex;gap:8px;align-items:center;margin-bottom:12px}.desk-dot{width:8px;height:8px;background:#43d18b;border-radius:50%;box-shadow:0 0 0 4px #244737}
+.desk-user{color:#fff;font-weight:600}.desk-role{font-size:11px;color:#82908b}.desk-logout{border:0!important;background:transparent!important;color:#aeb9b5!important;padding:5px 0!important;margin:8px 0 0!important;cursor:pointer}
+.desk-main{margin-left:218px;min-height:100vh}.desk-content{max-width:1180px;margin:0 auto;padding:38px 42px 70px}
+h1,h2,h3{font-family:Archivo,system-ui,sans-serif;line-height:1.2}h1{font-size:29px;letter-spacing:-.6px;margin:0 0 8px}h2{font-size:17px}h3{font-size:14px}
+p{color:var(--muted)}section,.desk-card{background:var(--surface);border:1px solid var(--line)!important;border-radius:12px!important;padding:22px!important;margin:18px 0!important;box-shadow:0 1px 2px #16231f0a}
+table{border-collapse:separate!important;border-spacing:0;width:100%;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);background:#f7f8f7}th,td{padding:14px 16px!important;border-bottom:1px solid var(--line)!important;text-align:left}tbody tr:last-child td{border-bottom:0!important}tbody tr:hover{background:#f8faff}
+label{display:block;margin-top:16px!important;color:var(--ink);font-size:13px;font-weight:600}
+input,select,textarea{width:100%;margin-top:6px;padding:11px 12px!important;border:1px solid #c9d1cd;border-radius:8px;background:#fff;color:var(--ink);font:14px Inter,system-ui,sans-serif;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px #2a5cff18}textarea{min-height:130px;resize:vertical}
+button{border:0;border-radius:8px;background:var(--accent);color:#fff;padding:10px 16px!important;margin-top:16px!important;font:600 13px Inter,system-ui,sans-serif;cursor:pointer}button:hover{filter:brightness(.95)}button:disabled{opacity:.55;cursor:wait}
+pre{white-space:pre-wrap;font:13px/1.65 Inter,system-ui,sans-serif;color:var(--ink);background:#f7f8f7;border-radius:8px;padding:14px}
+details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-weight:600}
+.progress{background:#eef3ff!important;border-color:#aebeff!important;color:#2247b8}.warning{background:#fffaf0!important;border-color:#efc77c!important}
+.desk-kicker{font:500 11px JetBrains Mono,monospace;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.desk-status{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;background:#eef3ff;color:#2247b8;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.desk-status:before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}
+@media(max-width:780px){.desk-sidebar{position:static;width:auto;min-height:auto}.desk-nav{grid-template-columns:1fr 1fr}.desk-foot{display:none}.desk-main{margin-left:0}.desk-content{padding:25px 16px}table{display:block;overflow-x:auto}}
+"""
+
+def desk_page(content:str,current:dict,active:str)->str:
+    role_labels={"technician":"Serwisant","senior_technician":"Starszy serwisant","admin":"Administrator"}
+    privileged=current["role"] in {"senior_technician","admin"}
+    def nav(path:str,label:str,key:str,icon:str)->str:
+        cls="active" if active==key else ""
+        return f"<a class='{cls}' href='{path}'><span>{icon}</span>{label}</a>"
+    extra=(nav("/cases","Baza przypadków","cases","◆")+nav("/knowledge","Dokumentacja","knowledge","▤")) if privileged else ""
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    # Existing pages are deliberately kept intact; the shared shell supplies the
+    # visual system while their forms and scripts continue to use the real API.
+    content=content.replace("<style>","<style>"+DESK_STYLE,1)
+    if "<style>" not in content:
+        content=f"<style>{DESK_STYLE}</style>"+content
+    marker="</style>"
+    sidebar=f"""<aside class='desk-sidebar'><div class='desk-logo'>SERWIS<span>DESK</span></div><nav class='desk-nav'>
+    {nav('/tickets','Zgłoszenia','tickets','▦')}{nav('/tickets/new','Nowe zgłoszenie','new','＋')}{extra}</nav>
+    <div class='desk-foot'><div class='desk-ready'><span class='desk-dot'></span>Asystent AI gotowy</div>
+    <div class='desk-user'>{html.escape(current['username'])}</div><div class='desk-role'>{role_labels.get(current['role'],current['role'])}</div>
+    <button class='desk-logout' id='desk-logout'>Wyloguj</button></div></aside><main class='desk-main'><div class='desk-content'>"""
+    content=content.replace(marker,marker+sidebar,1)
+    logout=f"""</div></main><script>document.getElementById('desk-logout').onclick=async()=>{{await fetch('/api/v1/auth/logout',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/login';}};</script>"""
+    return content.replace("</html>",logout+"</html>") if "</html>" in content else content+logout
+
 class Login(BaseModel): username:str; password:str
 class TicketCreate(BaseModel): client_id:int; program_id:int; installation_id:int|None=None; description:str=Field(min_length=10)
 class Resume(BaseModel): answers:dict={}
@@ -63,17 +116,16 @@ def health(): return {"status":"ok"}
 @app.get("/",response_class=HTMLResponse)
 def index(request:Request):
     current=session_user(request.cookies.get("support_session"))
-    if not current: return "<h1>IODO Support</h1><p><a href='/login'>Zaloguj się do panelu</a></p>"
+    if not current: return HTMLResponse(status_code=303,headers={"Location":"/login"})
     senior_links = "<p><a href='/cases'>Baza przypadków serwisowych</a></p><p><a href='/knowledge'>Import dokumentacji technicznej</a></p>" if current["role"] in {"senior_technician","admin"} else ""
-    csrf_value=html.escape(current["csrf_token"],quote=True)
-    return f"<h1>IODO Support</h1><p>Zalogowany: {html.escape(current['username'])} ({current['role']})</p><p><a href='/tickets'>Zgłoszenia serwisowe</a></p><p><a href='/tickets/new'>Nowe zgłoszenie serwisowe</a></p>{senior_links}<p>API: <a href='/docs'>/docs</a></p><button id='logout'>Wyloguj</button><script>document.getElementById('logout').onclick=async()=>{{await fetch('/api/v1/auth/logout',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/login';}}</script>"
+    return desk_page(f"<div class='desk-kicker'>Panel serwisowy</div><h1>Dzień dobry, {html.escape(current['username'])}</h1><p>Wybierz obszar pracy lub przejdź bezpośrednio do nowego zgłoszenia.</p><section><h2>Szybki start</h2><p><a href='/tickets'>Przeglądaj zgłoszenia serwisowe</a></p><p><a href='/tickets/new'>+ Utwórz nowe zgłoszenie</a></p>{senior_links}<p><a href='/docs'>Dokumentacja API</a></p></section>",dict(current),"home")
 
 @app.get("/login",response_class=HTMLResponse)
 def login_page(request:Request):
-    if session_user(request.cookies.get("support_session")): return "<p>Jesteś już zalogowany. <a href='/'>Przejdź do panelu</a>.</p>"
+    if session_user(request.cookies.get("support_session")): return HTMLResponse(status_code=303,headers={"Location":"/"})
     return """<!doctype html><html lang='pl'><meta charset='utf-8'><title>Logowanie — IODO Support</title>
-    <style>body{font:16px system-ui;max-width:420px;margin:4rem auto;padding:0 1rem}label{display:block;margin-top:1rem}input{width:100%;padding:.7rem;box-sizing:border-box}button{margin-top:1rem;padding:.7rem 1.2rem}#message{margin-top:1rem;color:#a00}</style>
-    <h1>IODO Support</h1><form id='login-form'><label>Użytkownik<input name='username' autocomplete='username' required></label><label>Hasło<input type='password' name='password' autocomplete='current-password' required></label><button type='submit'>Zaloguj</button></form><div id='message'></div>
+    <style>""" + DESK_STYLE + """.login-page{min-height:100vh;display:grid;place-items:center;padding:24px;background:#18201e}.login-card{width:min(420px,100%);background:#fff;border-radius:14px;padding:34px;box-shadow:0 22px 60px #0005}.login-logo{font:700 23px Archivo,sans-serif;margin-bottom:28px}.login-logo span{color:#2A5CFF}.login-card button{width:100%}#message{margin-top:12px;color:#DE3B3B}</style>
+    <div class='login-page'><div class='login-card'><div class='login-logo'>SERWIS<span>DESK</span></div><div class='desk-kicker'>Bezpieczny dostęp</div><h1>Zaloguj się</h1><p>Panel asystenta serwisowego</p><form id='login-form'><label>Użytkownik<input name='username' autocomplete='username' required></label><label>Hasło<input type='password' name='password' autocomplete='current-password' required></label><button type='submit'>Zaloguj</button></form><div id='message'></div></div></div>
     <script>document.getElementById('login-form').addEventListener('submit',async(e)=>{e.preventDefault();const f=new FormData(e.target);const r=await fetch('/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(f.entries()))});if(r.ok)location='/';else document.getElementById('message').textContent='Nieprawidłowy użytkownik lub hasło.';});</script></html>"""
 
 @app.get("/tickets",response_class=HTMLResponse)
@@ -84,7 +136,7 @@ def tickets_page(current=Depends(user)):
           WHERE c.name NOT LIKE 'Smoke %' ORDER BY t.created_at DESC LIMIT 100""")
         tickets=cur.fetchall()
     rows="".join(f"<tr><td><a href='/tickets/{row['id']}/view'>{str(row['id'])[:8]}</a></td><td>{html.escape(row['client_name'])}</td><td>{html.escape(row['program_name'])}</td><td>{html.escape(str(row['status']))}</td><td>{html.escape(row['description'][:120])}</td><td>{row['created_at'].strftime('%Y-%m-%d %H:%M')}</td></tr>" for row in tickets)
-    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenia</title><style>body{{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}}</style><h1>Zgłoszenia serwisowe</h1><p><a href='/tickets/new'>+ Nowe zgłoszenie</a> · <a href='/'>Panel</a></p><table><thead><tr><th>ID</th><th>Klient</th><th>System</th><th>Status</th><th>Opis</th><th>Utworzono</th></tr></thead><tbody>{rows}</tbody></table></html>"""
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenia</title><style>body{{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}}</style><div class='desk-kicker'>Centrum zgłoszeń</div><h1>Zgłoszenia serwisowe</h1><p>Obsługa zgłoszeń dla systemów ZZL i ASW. <a href='/tickets/new'>+ Nowe zgłoszenie</a></p><table><thead><tr><th>ID</th><th>Klient</th><th>System</th><th>Status</th><th>Opis</th><th>Utworzono</th></tr></thead><tbody>{rows}</tbody></table></html>""",current,"tickets")
 
 @app.get("/tickets/{ticket_id}/view",response_class=HTMLResponse)
 def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
@@ -117,13 +169,13 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
             fields.append(f"<label>{html.escape(labels.get(missing,missing))}<input name='{html.escape(missing,quote=True)}' required></label>")
         clarification_html=f"<section class='warning'><h2>Potrzebne uzupełnienie</h2><p>Analiza została zatrzymana, ponieważ brakuje danych. Uzupełnij pola i wznów — odpowiedzi zostaną dołączone do opisu dla modelu.</p><form id='resume-form'>{''.join(fields)}<button>Uzupełnij i wznów analizę</button></form><div id='resume-message'></div></section>"
     job_text=f"{job['status']}: {job.get('last_error') or ''}" if job else "brak"
-    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenie {ticket_id}</title>
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenie {ticket_id}</title>
     <style>body{{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem}}section{{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}}pre{{white-space:pre-wrap}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:9rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}.progress{{display:flex;gap:.8rem;align-items:center;padding:1rem;background:#eef6ff;border:1px solid #8abcec;border-radius:8px}}.warning{{background:#fff8df;border-color:#d5a72f}}.spinner{{width:20px;height:20px;border:3px solid #b9d7f2;border-top-color:#1769aa;border-radius:50%;animation:spin .8s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style>
-    <p><a href='/tickets'>← Zgłoszenia</a></p><h1>{html.escape(ticket['program_name'])} · {html.escape(ticket['client_name'])}</h1><p>Status: <strong>{html.escape(str(ticket['status']))}</strong> · zadanie: {html.escape(job_text)}</p>{progress_html}{clarification_html}
+    <div class='desk-kicker'>Zgłoszenie #{str(ticket_id)[:8]}</div><p><a href='/tickets'>← Wszystkie zgłoszenia</a></p><h1>{html.escape(ticket['program_name'])} · {html.escape(ticket['client_name'])}</h1><p><span class='desk-status'>{html.escape(str(ticket['status']))}</span> &nbsp; zadanie: {html.escape(job_text)}</p>{progress_html}{clarification_html}
     <section><h2>Opis zgłoszenia</h2><pre>{html.escape(ticket['description'])}</pre><button id='analyse'>Uruchom / ponów analizę modelu</button></section>
     <section><h2>Proponowana odpowiedź</h2><pre>{answer}</pre><h3>Źródła</h3>{source_html}</section>
     <section><h2>Zgłoś realizację i oceń podpowiedź</h2><form id='report-form'><label>Wynik<select name='outcome'><option value='helped'>Pomogła</option><option value='partially_helped'>Częściowo pomogła</option><option value='not_helped'>Nie pomogła</option></select></label><label>Ocena podpowiedzi 1–5<input name='suggestion_rating' type='number' min='1' max='5' value='3' required></label><label>Faktycznie zastosowane rozwiązanie<textarea name='actual_resolution' minlength='10' required></textarea></label><label>Komentarz<textarea name='comment'></textarea></label><button>Zapisz raport realizacji</button></form><div id='report-message'></div></section>{report_html}{senior_publish}
-    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});document.getElementById('report-message').textContent=r.ok?'Raport zapisany. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Rozwiązanie opublikowane. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};{auto_refresh}</script></html>"""
+    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});document.getElementById('report-message').textContent=r.ok?'Raport zapisany. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Rozwiązanie opublikowane. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};{auto_refresh}</script></html>""",current,"tickets")
 
 @app.get("/tickets/new",response_class=HTMLResponse)
 def new_ticket_page(current=Depends(user)):
@@ -138,15 +190,15 @@ def new_ticket_page(current=Depends(user)):
     program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
     installation_json=html.escape(json.dumps(installations,ensure_ascii=False),quote=False)
     csrf_value=html.escape(current["csrf_token"],quote=True)
-    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Nowe zgłoszenie</title>
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Nowe zgłoszenie</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:12rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
-    <h1>Nowe zgłoszenie serwisowe</h1><form id='ticket-form'>
+    <div class='desk-kicker'>Nowa sprawa</div><h1>Nowe zgłoszenie serwisowe</h1><p>Opisz problem możliwie dokładnie. Po zapisaniu asystent automatycznie rozpocznie analizę.</p><section><form id='ticket-form'>
     <label>Klient<select name='client_id' required>{client_options}</select></label>
     <label>System<select name='program_id' required>{program_options}</select></label>
     <label>Instalacja<select name='installation_id'><option value=''>Brak / nie dotyczy</option></select></label>
     <label>Opis zgłoszenia<textarea name='description' minlength='10' required placeholder='Objawy, kod błędu, wersja, wykonane czynności...'></textarea></label>
-    <button type='submit'>Utwórz zgłoszenie</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
-    <script>const installations={installation_json};const form=document.getElementById('ticket-form');const install=form.installation_id;function refresh(){{install.innerHTML='<option value="">Brak / nie dotyczy</option>';for(const row of installations)if(row.client_id==form.client_id.value&&row.program_id==form.program_id.value){{const o=document.createElement('option');o.value=row.id;o.textContent=[row.version,row.environment].filter(Boolean).join(' / ')||('Instalacja '+row.id);install.appendChild(o);}}}}form.client_id.onchange=refresh;form.program_id.onchange=refresh;refresh();form.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(form);const body=Object.fromEntries(f.entries());body.client_id=Number(body.client_id);body.program_id=Number(body.program_id);body.installation_id=body.installation_id?Number(body.installation_id):null;const r=await fetch('/api/v1/tickets',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});const m=document.getElementById('message');if(r.ok){{const data=await r.json();await fetch('/api/v1/tickets/'+data.id+'/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/tickets/'+data.id+'/view';}}else m.textContent='Błąd: '+await r.text();}});</script></html>"""
+    <button type='submit'>Utwórz i analizuj zgłoszenie</button></form><div id='message'></div></section>
+    <script>const installations={installation_json};const form=document.getElementById('ticket-form');const install=form.installation_id;function refresh(){{install.innerHTML='<option value="">Brak / nie dotyczy</option>';for(const row of installations)if(row.client_id==form.client_id.value&&row.program_id==form.program_id.value){{const o=document.createElement('option');o.value=row.id;o.textContent=[row.version,row.environment].filter(Boolean).join(' / ')||('Instalacja '+row.id);install.appendChild(o);}}}}form.client_id.onchange=refresh;form.program_id.onchange=refresh;refresh();form.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(form);const body=Object.fromEntries(f.entries());body.client_id=Number(body.client_id);body.program_id=Number(body.program_id);body.installation_id=body.installation_id?Number(body.installation_id):null;const r=await fetch('/api/v1/tickets',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});const m=document.getElementById('message');if(r.ok){{const data=await r.json();await fetch('/api/v1/tickets/'+data.id+'/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/tickets/'+data.id+'/view';}}else m.textContent='Błąd: '+await r.text();}});</script></html>""",current,"new")
 
 @app.get("/knowledge",response_class=HTMLResponse)
 def knowledge_page(current=Depends(user)):
@@ -159,14 +211,14 @@ def knowledge_page(current=Depends(user)):
     program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
     client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
     csrf_value=html.escape(current["csrf_token"],quote=True)
-    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Import dokumentacji</title>
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Import dokumentacji</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}select,input{{width:100%;padding:.6rem;box-sizing:border-box}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
-    <h1>Import dokumentacji technicznej</h1><p>PDF lub DOCX zostanie przypisany do jednego systemu. Zakres globalny jest dostępny wszystkim klientom tego systemu; zakres klienta tylko wybranemu klientowi.</p>
-    <form id='knowledge-form'><label>System<select name='program_id' required>{program_options}</select></label>
+    <div class='desk-kicker'>Baza wiedzy</div><h1>Import dokumentacji technicznej</h1><p>PDF lub DOCX zostanie przypisany do jednego systemu. Zakres globalny jest dostępny wszystkim klientom tego systemu; zakres klienta tylko wybranemu klientowi.</p>
+    <section><form id='knowledge-form'><label>System<select name='program_id' required>{program_options}</select></label>
     <label>Zakres<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla klienta</option></select></label>
     <label id='client-label' hidden>Klient<select name='client_id'><option value=''>Wybierz klienta</option>{client_options}</select></label>
-    <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Importuj i indeksuj</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
-    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(form)}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>"""
+    <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Importuj i indeksuj</button></form><div id='message'></div></section>
+    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(form)}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>""",current,"knowledge")
 
 @app.get("/cases",response_class=HTMLResponse)
 def cases_page(current=Depends(user)):
@@ -176,16 +228,16 @@ def cases_page(current=Depends(user)):
         programs=cur.fetchall()
     options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
     csrf_value=html.escape(current["csrf_token"],quote=True)
-    return f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Przypadki serwisowe</title>
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Przypadki serwisowe</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:8rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
-    <h1>Dodaj przypadek serwisowy</h1><p>Każdy przypadek należy dokładnie do jednego systemu. Dane ZZL i ASW są wyszukiwane oddzielnie.</p>
-    <form id='case-form'><label>System<select name='program_id' required>{options}</select></label>
+    <div class='desk-kicker'>Wiedza serwisowa</div><h1>Dodaj przypadek serwisowy</h1><p>Każdy przypadek należy dokładnie do jednego systemu. Dane ZZL i ASW są wyszukiwane oddzielnie.</p>
+    <section><form id='case-form'><label>System<select name='program_id' required>{options}</select></label>
     <label>Tytuł<input name='title' minlength='3' required></label>
     <label>Opis zgłoszenia<textarea name='ticket_description' minlength='10' required></textarea></label>
     <label>Rozwiązanie<textarea name='resolution' minlength='10' required></textarea></label>
     <label>Kod błędu<input name='error_code'></label><label>Wersja<input name='version'></label><label>Środowisko<input name='environment'></label>
-    <button type='submit'>Zapisz przypadek</button></form><div id='message'></div><p><a href='/'>Powrót</a></p>
-    <script>document.getElementById('case-form').addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());body.program_id=Number(body.program_id);for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok)e.target.reset();}});</script></html>"""
+    <button type='submit'>Zapisz przypadek</button></form><div id='message'></div></section>
+    <script>document.getElementById('case-form').addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());body.program_id=Number(body.program_id);for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok)e.target.reset();}});</script></html>""",current,"cases")
 
 @app.post("/api/v1/auth/login")
 def login(body:Login,request:Request,response:Response):

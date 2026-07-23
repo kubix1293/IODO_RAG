@@ -1,6 +1,6 @@
 # Panel asystenta serwisowego — indeks
 
-Status: fundament v1 zaimplementowany. Panel działa niezależnie na `:8081`; pilot wymaga konfiguracji sekretów, migracji, kont użytkowników i zestawu ewaluacyjnego.
+Status: fundament v1 zaimplementowany. Panel działa niezależnie na `:8081` i korzysta ze spójnego interfejsu SERWISDESK na podstawie wzorca `docs/serwis-zgloszen.jsx`; pilot wymaga konfiguracji sekretów, migracji, kont użytkowników i zestawu ewaluacyjnego.
 
 - [Architektura](ARCHITECTURE.md)
 - [Model danych](DATA_MODEL.md)

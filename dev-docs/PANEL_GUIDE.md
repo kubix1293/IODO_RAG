@@ -4,6 +4,8 @@
 
 Panel działa na porcie `8081`. Otwórz `/login` i zaloguj się lokalnym kontem. Konto bootstrap ma nazwę z `SUPPORT_BOOTSTRAP_USER`, a początkowe hasło znajduje się wyłącznie w nieśledzonym `.env`.
 
+Interfejs używa wspólnego układu **SERWISDESK**: ciemnego menu bocznego, jasnego obszaru roboczego, kart formularzy i spójnych oznaczeń statusu. Układ jest responsywny i na wąskim ekranie przenosi nawigację nad treść. Wzorzec wyglądu znajduje się w `docs/serwis-zgloszen.jsx`; produkcyjny panel zachowuje jednak serwerowe logowanie, RBAC, CSRF i istniejące API zamiast demonstracyjnych danych oraz bezpośredniego połączenia z zewnętrznym modelem z pliku wzorcowego.
+
 - `technician`: zgłoszenia, analiza, raport realizacji i ocena;
 - `senior_technician`: dodatkowo przypadki, dokumentacja i publikacja wiedzy;
 - `admin`: wszystkie uprawnienia seniora i konfiguracja.
@@ -17,7 +19,7 @@ Początkowe systemy to **ZZL** i **ASW**. Każde zgłoszenie, przypadek, dokumen
 1. Wybierz **Nowe zgłoszenie serwisowe** (`/tickets/new`).
 2. Wybierz klienta, system i opcjonalnie instalację.
 3. Opisz objawy, kod błędu, wersję, środowisko i wykonane czynności.
-4. Naciśnij **Utwórz zgłoszenie**.
+4. Naciśnij **Utwórz i analizuj zgłoszenie**.
 
 Panel automatycznie uruchomi analizę i otworzy stanowisko pracy.
 
