@@ -68,8 +68,11 @@ def test_support_prompt_is_technical_not_legal():
         "client_ref":"K-test","effective_description":"ERR-1234 podczas zapisu w module ASW",
         "sources":[{"kind":"documentation","id":"1","chunk_text":"Sprawdź usługę ZSIMED i jej log."}],
     })
-    assert "SŁOWA KLUCZOWE" in prompt and "ZALECANA PROCEDURA" in prompt and "WERYFIKACJA" in prompt
+    assert "kolejnych numerowanych kroków" in prompt and "co zrobić, dlaczego" in prompt
     assert "Nie twórz stylu prawnego" in prompt and "Nie wypisuj numerów materiałów" in prompt
+    assert "Nie używaj składni Markdown" in prompt
+def test_llm_markdown_emphasis_is_removed():
+    assert support_graph.plain_text_response("## Diagnoza\n**Błąd**\n* krok")=="Diagnoza\nBłąd\n- krok"
 def test_support_prompt_uses_titles_full_chunks_and_global_budget():
     full_chunk="A"*1600
     prompt=support_graph.build_technical_support_prompt({

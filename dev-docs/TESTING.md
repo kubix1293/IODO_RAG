@@ -10,6 +10,6 @@ Lokalny test `tests/integration_smoke.py` tworzy oznaczone dane testowe i sprawd
 
 Testy chunkingu sprawdzają rozpoznanie instrukcji, zachowanie nagłówka DOCX i brak połączenia dwóch procedur nawet wtedy, gdy overlap jest większy od ostatniego kroku.
 
-Test promptu odpowiedzi sprawdza obecność technicznej struktury, nacisk na słowa kluczowe oraz zakaz stylu prawnego i numerowania materiałów. Po zmianie promptu należy dodatkowo wykonać neutralne wywołanie skonfigurowanego modelu i potwierdzić pięć wymaganych nagłówków odpowiedzi.
+Test promptu odpowiedzi sprawdza dialogowe wyjaśnienie, numerowane kroki, nacisk na słowa kluczowe oraz zakaz stylu prawnego i składni Markdown. Osobny test sprawdza usunięcie gwiazdek i znaczników nagłówków z odpowiedzi modelu.
 
 Testy kontekstu LLM sprawdzają przekazanie tytułu i pełnego fragmentu, dobieranie fragmentu poprzedniego oraz następnego, oznaczenie ich roli i nieprzekroczenie globalnego budżetu `24 000` znaków.

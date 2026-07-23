@@ -112,7 +112,7 @@ class AdminClientIn(BaseModel):
 class AdminSettingsIn(BaseModel):
     external_llm_enabled:bool
     llm_timeout_seconds:int=Field(ge=60,le=3600)
-    llm_response_tokens:int=Field(ge=100,le=1000)
+    llm_response_tokens:int=Field(ge=100,le=2000)
     retrieval_candidates:int=Field(ge=5,le=20)
     retrieval_top_sources:int=Field(ge=1,le=8)
     chunk_target_chars:int=Field(ge=500,le=2000)
@@ -376,7 +376,7 @@ def settings_page(current=Depends(user)):
     <section class='settings-wide'><h2>Parametry asystenta</h2><p>Nowe wartości obowiązują dla kolejnych analiz i importów. Nie zmieniają sekretów ani adresów usług.</p><form id='settings-form'>
     <label>Zewnętrzny model LLM<select name='external_llm_enabled'><option value='1' {'selected' if configured["external_llm_enabled"] else ''}>Włączony — pierwszy wybór</option><option value='0' {'selected' if not configured["external_llm_enabled"] else ''}>Wyłączony — tylko lokalna Ollama</option></select></label>
     <label>Limit czasu odpowiedzi Ollamy (sekundy)<input name='llm_timeout_seconds' type='number' min='60' max='3600' value='{configured["llm_timeout_seconds"]}' required></label>
-    <label>Maksymalna długość odpowiedzi (tokeny)<input name='llm_response_tokens' type='number' min='100' max='1000' value='{configured["llm_response_tokens"]}' required></label>
+    <label>Maksymalna długość odpowiedzi (tokeny)<input name='llm_response_tokens' type='number' min='100' max='2000' value='{configured["llm_response_tokens"]}' required></label>
     <label>Kandydaci do rerankingu (5–20)<input name='retrieval_candidates' type='number' min='5' max='20' value='{configured["retrieval_candidates"]}' required></label>
     <label>Źródła przekazywane do odpowiedzi (1–8)<input name='retrieval_top_sources' type='number' min='1' max='8' value='{configured["retrieval_top_sources"]}' required></label>
     <label>Rozmiar fragmentu dokumentu (znaki)<input name='chunk_target_chars' type='number' min='500' max='2000' value='{configured["chunk_target_chars"]}' required></label>

@@ -7,7 +7,7 @@ from .config import settings
 def connect(): return psycopg.connect(settings.database_url, row_factory=dict_row)
 
 def application_settings(cur=None):
-    defaults={"llm_timeout_seconds":settings.llm_timeout_seconds,"llm_response_tokens":500,"external_llm_enabled":1,"retrieval_candidates":20,
+    defaults={"llm_timeout_seconds":settings.llm_timeout_seconds,"llm_response_tokens":1200,"external_llm_enabled":1,"retrieval_candidates":20,
               "retrieval_top_sources":8,"chunk_target_chars":1600,"chunk_overlap_chars":220}
     if cur:
         cur.execute("SELECT key,value FROM support.application_settings")

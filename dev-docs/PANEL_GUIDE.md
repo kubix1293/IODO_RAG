@@ -50,7 +50,7 @@ Worker wykonuje:
 5. rozszerzenie trafień z dokumentacji o poprzedni i następny fragment tej samej instrukcji;
 6. wygenerowanie przez zewnętrzny model lub lokalną Ollamę technicznej diagnozy i instrukcji wyłącznie na podstawie trafnych materiałów.
 
-Model wyodrębnia ze zgłoszenia system, moduł, usługę, operację, kod błędu, wersję i objaw. Odpowiedź ma sekcje: **Słowa kluczowe**, **Prawdopodobna przyczyna**, **Zalecana procedura**, **Weryfikacja** oraz **Uwagi i eskalacja**. Procedura zawiera konkretne kroki i oczekiwane wyniki. Panel nie prezentuje odpowiedzi w stylu dokumentu prawnego ani formalnych cytowań źródeł. Jeśli wiedza jest niewystarczająca, podpowiedź wskazuje dane potrzebne do dalszej diagnozy.
+Model wyodrębnia ze zgłoszenia system, moduł, usługę, operację, kod błędu, wersję i objaw. Odpowiedź zaczyna się naturalnym objaśnieniem problemu, a następnie prowadzi serwisanta przez kolejne numerowane czynności. Każdy krok mówi, co zrobić, dlaczego i jaki rezultat sprawdzić. Panel nie prezentuje odpowiedzi w stylu dokumentu prawnego, formalnych cytowań ani znaczników Markdown. Jeśli wiedza jest niewystarczająca, podpowiedź wskazuje dane potrzebne do dalszej diagnozy.
 
 Do modelu nie jest wysyłany cały dokument. Kontekst zawiera tytuły i pełne, najlepiej dopasowane fragmenty wraz z sąsiednimi krokami procedury, maksymalnie do `24 000` znaków. Izolacja systemu i klienta jest sprawdzana także podczas dobierania sąsiednich fragmentów.
 
@@ -97,6 +97,8 @@ Administrator ma w menu pozycję **Ustawienia** (`/settings`). Może tam:
 - włączyć zewnętrzny model jako pierwszy wybór albo natychmiast przełączyć system na samą lokalną Ollamę.
 
 Parametry obowiązują przy kolejnej analizie lub imporcie i nie wymagają restartu kontenerów. Zmiany zapisują się w audycie. Sekrety i adresy infrastruktury nadal konfiguruje się wyłącznie przez środowisko uruchomieniowe.
+
+Domyślny limit generowanej odpowiedzi wynosi `1200` tokenów. Administrator może ustawić wartość od `100` do `2000` tokenów.
 
 Po analizie stanowisko zgłoszenia pokazuje użyty generator: `zewnętrzne API`, `lokalna Ollama (fallback)` albo `lokalna Ollama`, a także liczbę wykonanych redakcji danych.
 

@@ -271,14 +271,21 @@ def local_llm_answer(prompt:str,runtime:dict)->str:
     return response.json().get("response","").strip()
 
 
+def plain_text_response(answer:str)->str:
+    answer=answer.replace("**","").replace("__","")
+    answer=re.sub(r"(?m)^\s*#{1,6}\s*","",answer)
+    answer=re.sub(r"(?m)^(\s*)\*\s+",r"\1- ",answer)
+    return answer.replace("*","").strip()
+
+
 def hybrid_llm_answer(prompt:str,runtime:dict)->tuple[str,str,str]:
     external_error=""
     if runtime["external_llm_enabled"]:
         try:
-            return external_llm_answer(prompt,runtime),"external_api",""
+            return plain_text_response(external_llm_answer(prompt,runtime)),"external_api",""
         except Exception as exc:
             external_error=str(exc)[:300]
-    answer=local_llm_answer(prompt,runtime)
+    answer=plain_text_response(local_llm_answer(prompt,runtime))
     provider="ollama_fallback" if runtime["external_llm_enabled"] else "ollama_local"
     return answer,provider,external_error
 
@@ -308,25 +315,10 @@ Zasady analizy:
 5. Nie twierdź, że czynność została wykonana. To ma być instrukcja dla serwisanta.
 6. Jeśli dopasowanie jest słabe, jasno napisz, jakich danych technicznych brakuje, zamiast zgadywać.
 
-Wymagany format odpowiedzi:
-SŁOWA KLUCZOWE
-- krótka lista najważniejszych terminów
+Sposób odpowiedzi:
+Najpierw wyjaśnij serwisantowi w kilku naturalnych zdaniach, jak rozumiesz problem i jaka jest najbardziej prawdopodobna przyczyna. Następnie przeprowadź go przez rozwiązanie, używając kolejnych numerowanych kroków: 1., 2., 3. Każdy krok wyjaśnij prostym językiem technicznym: co zrobić, dlaczego oraz jaki wynik powinien się pojawić. Na końcu opisz, jak zweryfikować rezultat i kiedy przerwać działania lub eskalować problem.
 
-PRAWDOPODOBNA PRZYCZYNA
-- konkretna diagnoza i poziom pewności: wysoki, średni albo niski
-
-ZALECANA PROCEDURA
-1. Konkretna czynność techniczna.
-2. Kolejna czynność techniczna.
-Przy każdym kroku podaj oczekiwany rezultat lub informację, co należy sprawdzić.
-
-WERYFIKACJA
-- jak potwierdzić usunięcie problemu
-
-UWAGI I ESKALACJA
-- ryzyko, warunek przerwania albo dane potrzebne do dalszej diagnozy
-
-Odpowiadaj po polsku, technicznie, zwięźle i operacyjnie.
+Nie używaj składni Markdown. Nie stosuj gwiazdek, podwójnych gwiazdek, znaków #, tabel ani sztucznych formalnych nagłówków. Odpowiedź ma brzmieć jak rzeczowa rozmowa doświadczonego serwisanta z drugim serwisantem.
 
 REFERENCJA KLIENTA: {state["client_ref"]}
 
