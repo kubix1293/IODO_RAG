@@ -52,7 +52,7 @@ def desk_page(content:str,current:dict,active:str)->str:
     def nav(path:str,label:str,key:str,icon:str)->str:
         cls="active" if active==key else ""
         return f"<a class='{cls}' href='{path}'><span>{icon}</span>{label}</a>"
-    extra=(nav("/cases","Baza przypadków","cases","◆")+nav("/knowledge","Dokumentacja","knowledge","▤")) if privileged else ""
+    extra=(nav("/knowledge/review","Do zatwierdzenia","review","✓")+nav("/cases","Baza przypadków","cases","◆")+nav("/knowledge","Dokumentacja","knowledge","▤")) if privileged else ""
     if current["role"]=="admin": extra+=nav("/settings","Ustawienia","settings","⚙")
     csrf_value=html.escape(current["csrf_token"],quote=True)
     # Existing pages are deliberately kept intact; the shared shell supplies the
@@ -135,7 +135,7 @@ def health(): return {"status":"ok"}
 def index(request:Request):
     current=session_user(request.cookies.get("support_session"))
     if not current: return HTMLResponse(status_code=303,headers={"Location":"/login"})
-    senior_links = "<p><a href='/cases'>Baza przypadków serwisowych</a></p><p><a href='/knowledge'>Import dokumentacji technicznej</a></p>" if current["role"] in {"senior_technician","admin"} else ""
+    senior_links = "<p><a href='/knowledge/review'>Rozwiązania do zatwierdzenia</a></p><p><a href='/cases'>Baza przypadków serwisowych</a></p><p><a href='/knowledge'>Import dokumentacji technicznej</a></p>" if current["role"] in {"senior_technician","admin"} else ""
     return desk_page(f"<div class='desk-kicker'>Panel serwisowy</div><h1>Dzień dobry, {html.escape(current['username'])}</h1><p>Wybierz obszar pracy lub przejdź bezpośrednio do nowego zgłoszenia.</p><section><h2>Szybki start</h2><p><a href='/tickets'>Przeglądaj zgłoszenia serwisowe</a></p><p><a href='/tickets/new'>+ Utwórz nowe zgłoszenie</a></p>{senior_links}<p><a href='/docs'>Dokumentacja API</a></p></section>",dict(current),"home")
 
 @app.get("/login",response_class=HTMLResponse)
@@ -155,6 +155,33 @@ def tickets_page(current=Depends(user)):
         tickets=cur.fetchall()
     rows="".join(f"<tr><td><a href='/tickets/{row['id']}/view'>{str(row['id'])[:8]}</a></td><td>{html.escape(row['client_name'])}</td><td>{html.escape(row['program_name'])}</td><td>{html.escape(str(row['status']))}</td><td>{html.escape(row['description'][:120])}</td><td>{row['created_at'].strftime('%Y-%m-%d %H:%M')}</td></tr>" for row in tickets)
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenia</title><style>body{{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}}</style><div class='desk-kicker'>Centrum zgłoszeń</div><h1>Zgłoszenia serwisowe</h1><p>Obsługa zgłoszeń dla systemów ZZL i ASW. <a href='/tickets/new'>+ Nowe zgłoszenie</a></p><table><thead><tr><th>ID</th><th>Klient</th><th>System</th><th>Status</th><th>Opis</th><th>Utworzono</th></tr></thead><tbody>{rows}</tbody></table></html>""",current,"tickets")
+
+@app.get("/knowledge/review",response_class=HTMLResponse)
+def knowledge_review_page(current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT t.id,t.description,c.name client_name,p.name program_name,
+          r.outcome,r.suggestion_rating,r.actual_resolution,r.updated_at
+          FROM support.ticket_resolution_reports r
+          JOIN support.tickets t ON t.id=r.ticket_id
+          JOIN public.clients c ON c.id=t.client_id
+          JOIN support.programs p ON p.id=t.program_id
+          WHERE r.published_solution_id IS NULL
+          ORDER BY r.updated_at ASC""")
+        pending=cur.fetchall()
+    rows="".join(
+        f"""<tr><td><a href='/tickets/{row["id"]}/view'>{str(row["id"])[:8]}</a></td>
+        <td>{html.escape(row["client_name"])}</td><td>{html.escape(row["program_name"])}</td>
+        <td>{html.escape(row["description"][:140])}</td><td>{html.escape(row["actual_resolution"][:180])}</td>
+        <td>{html.escape(row["outcome"])} · {row["suggestion_rating"]}/5</td>
+        <td><a href='/tickets/{row["id"]}/view#knowledge-publication'>Oceń i opublikuj</a></td></tr>"""
+        for row in pending
+    ) or "<tr><td colspan='7'>Brak rozwiązań oczekujących na zatwierdzenie.</td></tr>"
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Do zatwierdzenia</title>
+    <div class='desk-kicker'>Baza wiedzy</div><h1>Rozwiązania do zatwierdzenia</h1>
+    <p>Raport serwisanta nie trafia do aktywnej bazy wiedzy, dopóki starszy serwisant lub administrator go nie opublikuje.</p>
+    <table><thead><tr><th>Zgłoszenie</th><th>Klient</th><th>System</th><th>Opis</th><th>Rozwiązanie</th><th>Ocena</th><th>Akcja</th></tr></thead>
+    <tbody>{rows}</tbody></table></html>""",current,"review")
 
 @app.get("/tickets/{ticket_id}/view",response_class=HTMLResponse)
 def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
@@ -184,7 +211,7 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
         report_html=f"<section><h2>Raport realizacji</h2><p>Wynik: {html.escape(report['outcome'])}; ocena podpowiedzi: {report['suggestion_rating']}/5</p><pre>{html.escape(report['actual_resolution'])}</pre>{published}{curation_html}</section>"
     senior_publish=""
     if current["role"] in {"senior_technician","admin"} and report and not report["published_solution_id"]:
-        senior_publish="""<section><h2>Publikacja do bazy wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą i połączy, uzupełni albo utworzy właściwy wątek.</p><form id='publish-form'><label>Tytuł rozwiązania<input name='title' minlength='3' required></label><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Przeanalizuj i opublikuj rozwiązanie</button></form><div id='publish-message'></div></section>"""
+        senior_publish="""<section id='knowledge-publication'><h2>Zatwierdzenie i publikacja do bazy wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą i połączy, uzupełni albo utworzy właściwy wątek.</p><form id='publish-form'><label>Tytuł rozwiązania<input name='title' minlength='3' required></label><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Zatwierdź i opublikuj rozwiązanie</button></form><div id='publish-message'></div></section>"""
     running=bool(job and job["status"] in {"queued","running"}); auto_refresh="setTimeout(()=>location.reload(),3000);" if running else ""
     progress_html="<div id='work-status' class='progress'><span class='spinner'></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span></div>" if running else "<div id='work-status'></div>"
     clarification_html=""
@@ -514,6 +541,8 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
           (run_id,ticket_id,current["id"],target_client_id,body.scope,provider,json.dumps(decision)))
         cur.execute("UPDATE support.ticket_resolution_reports SET published_solution_id=%s,published_at=now() WHERE id=%s",
                     (solution_id,row["report_id"]))
+        cur.execute("UPDATE support.tickets SET status='closed',closed_at=COALESCE(closed_at,now()),updated_at=now() WHERE id=%s",
+                    (ticket_id,))
         audit(cur,current["id"],"curate_and_publish","ticket",ticket_id,
               {"solution_id":solution_id,"problem_id":problem_id,"action":action,"scope":body.scope,"provider":provider})
     return {"problem_id":problem_id,"solution_id":solution_id,"historical_case_id":case_id,

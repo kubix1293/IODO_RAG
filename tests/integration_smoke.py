@@ -88,6 +88,7 @@ def main() -> None:
     headers = {"X-CSRF-Token": login["csrf_token"]}
     assert session.get(BASE + "/", timeout=10).status_code == 200
     assert session.get(BASE + "/cases", timeout=10).status_code == 200
+    assert session.get(BASE + "/knowledge/review", timeout=10).status_code == 200
     assert session.get(BASE + "/tickets/new", timeout=10).status_code == 200
     assert session.get(BASE + "/knowledge", timeout=10).status_code == 200
     assert session.post(BASE + "/api/v1/tickets", json={}, timeout=10).status_code == 403
@@ -168,7 +169,7 @@ def main() -> None:
     )
     assert report["suggestion_rating"]==5
     published=require(
-        session.post(f"{BASE}/api/v1/tickets/{ticket_id}/publish-resolution",headers=headers,json={"title":f"Naprawa uprawnień {suffix}"}),
+        session.post(f"{BASE}/api/v1/tickets/{ticket_id}/publish-resolution",headers=headers,json={"title":f"Naprawa uprawnień {suffix}","scope":"global"}),
         201,
     )
     assert published["status"]=="approved"
@@ -207,6 +208,7 @@ def main() -> None:
     assert technician.get(BASE + "/cases", timeout=10).status_code == 403
     assert technician.get(BASE + "/tickets/new", timeout=10).status_code == 200
     assert technician.get(BASE + "/knowledge", timeout=10).status_code == 403
+    assert technician.get(BASE + "/knowledge/review", timeout=10).status_code == 403
     print(f"integration smoke passed: ticket={ticket_id}")
 
 

@@ -54,7 +54,9 @@ Po wykonaniu czynności technik wybiera wynik (`pomogła`, `częściowo pomogła
 
 ## Publikacja przez seniora
 
-Po raporcie senior/admin widzi sekcję **Publikacja do bazy wiedzy**. Nadaje tytuł i publikuje metodę. Panel wiąże lub tworzy problem kanoniczny, tworzy zatwierdzone rozwiązanie i krok procedury oraz przypadek historyczny. Wiedza jest od razu dostępna kolejnym zgłoszeniom tego systemu. Raportu nie można opublikować dwukrotnie.
+Po raporcie senior/admin widzi w menu pozycję **Do zatwierdzenia** (`/knowledge/review`). Kolejka pokazuje nieopublikowane rozwiązania wraz z klientem, systemem, opisem zgłoszenia, faktycznym rozwiązaniem i oceną podpowiedzi. Akcja **Oceń i opublikuj** otwiera właściwe zgłoszenie bezpośrednio na formularzu zatwierdzania.
+
+Senior nadaje tytuł, wybiera zakres i publikuje metodę. Panel wiąże lub tworzy problem kanoniczny, tworzy zatwierdzone rozwiązanie i krok procedury oraz przypadek historyczny. Wiedza jest od razu dostępna kolejnym zgłoszeniom tego systemu, a zgłoszenie otrzymuje status `closed`. Raportu nie można opublikować dwukrotnie.
 
 Przed zapisem kurator Qwen porównuje metodę z obecną wiedzą. Może uznać ją za duplikat, dopisać nowy krok do tej samej metody, utworzyć alternatywne rozwiązanie istniejącego problemu albo nowy problem. Senior wybiera przy publikacji zakres globalny lub prywatny bieżącego klienta.
 
