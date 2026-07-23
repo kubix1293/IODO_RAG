@@ -3,6 +3,7 @@ from support.security import anonymize,anonymize_with_report,client_reference
 from support.workflow import interpret_locally,validate_feedback
 from support.worker import enrich_description,json_safe
 import support.graph as support_graph
+import support.learning as support_learning
 
 def test_ranking_weights(): assert total(1,1,1)==1
 def test_effectiveness_has_prior(): assert effectiveness(1,0,0)<1
@@ -25,6 +26,24 @@ def test_hybrid_llm_falls_back_to_ollama(monkeypatch):
     monkeypatch.setattr(support_graph,"local_llm_answer",lambda prompt,runtime:"LOCAL")
     answer,provider,error=support_graph.hybrid_llm_answer("prompt",{"external_llm_enabled":1})
     assert answer=="LOCAL" and provider=="ollama_fallback" and "timeout" in error
+def test_knowledge_curator_reuses_existing_solution(monkeypatch):
+    monkeypatch.setattr(support_learning,"application_settings",lambda cur:{"external_llm_enabled":1})
+    monkeypatch.setattr(support_learning,"hybrid_llm_answer",lambda prompt,runtime:(
+        '{"action":"supplement","problem_id":7,"solution_id":9,"confidence":0.91,"reason":"ta sama przyczyna"}',
+        "external_api",""))
+    candidates=[{"problem_id":7,"problem_title":"Błąd usługi","problem_description":"Brak połączenia",
+                 "solution_id":9,"solution_title":"Restart","solution_summary":"Uruchom usługę","solution_client_id":None}]
+    decision,provider,error=support_learning.curate_knowledge(None,"Brak usługi","Restart usługi","Naprawa",candidates,"K-test")
+    assert decision["action"]=="supplement" and decision["solution_id"]==9 and provider=="external_api" and not error
+def test_knowledge_curator_rejects_unknown_ids(monkeypatch):
+    monkeypatch.setattr(support_learning,"application_settings",lambda cur:{})
+    monkeypatch.setattr(support_learning,"hybrid_llm_answer",lambda prompt,runtime:(
+        '{"action":"duplicate","problem_id":999,"solution_id":888}',"external_api",""))
+    try:
+        support_learning.curate_knowledge(None,"Opis","Rozwiązanie","Tytuł",[],"K-test")
+        assert False,"oczekiwano odrzucenia obcego ID"
+    except ValueError:
+        pass
 def test_feedback_validation():
     assert validate_feedback("not_helped","")[0]=="incomplete"
     assert validate_feedback("helped","nadal nie pomogło")[0]=="suspicious"

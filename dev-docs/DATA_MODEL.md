@@ -17,6 +17,8 @@ Globalna wiedza ma `client_id IS NULL`; prywatna ma `scope=client` i klienta. Ka
 
 `historical_cases` przechowuje opis zgłoszenia i rozwiązanie oraz zawsze wymaga jednego `program_id`. Początkowe systemy to ZZL i ASW. Odczyt przypadków nie ma trybu „wszystkie systemy”; wymagany filtr programu zapobiega mieszaniu baz problemów.
 
+Migracja `0006_knowledge_curation` dodaje do przypadku opcjonalny `client_id` oraz powiązania z problemem kanonicznym i rozwiązaniem. `client_id IS NULL` oznacza przypadek globalny; przypadek prywatny jest zwracany tylko dla zgłoszeń tego klienta. `knowledge_curation_runs` przechowuje decyzję modelu, zakres, dostawcę i aktora publikacji.
+
 `ticket_resolution_reports` przechowuje wynik realizacji, ocenę podpowiedzi 1–5 oraz faktycznie zastosowaną metodę. Jeden raport przypada na zgłoszenie. Po publikacji przez seniora wskazuje utworzone zatwierdzone rozwiązanie.
 
 Migracja `0004_application_settings` dodaje ustawienia typu klucz–wartość wraz z administratorem i czasem ostatniej zmiany. Do bazy trafiają wyłącznie kontrolowane wartości liczbowe; sekrety pozostają w środowisku uruchomieniowym.

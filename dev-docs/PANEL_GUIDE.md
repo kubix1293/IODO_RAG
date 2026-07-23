@@ -51,9 +51,11 @@ Po wykonaniu czynności technik wybiera wynik (`pomogła`, `częściowo pomogła
 
 Po raporcie senior/admin widzi sekcję **Publikacja do bazy wiedzy**. Nadaje tytuł i publikuje metodę. Panel wiąże lub tworzy problem kanoniczny, tworzy zatwierdzone rozwiązanie i krok procedury oraz przypadek historyczny. Wiedza jest od razu dostępna kolejnym zgłoszeniom tego systemu. Raportu nie można opublikować dwukrotnie.
 
+Przed zapisem kurator Qwen porównuje metodę z obecną wiedzą. Może uznać ją za duplikat, dopisać nowy krok do tej samej metody, utworzyć alternatywne rozwiązanie istniejącego problemu albo nowy problem. Senior wybiera przy publikacji zakres globalny lub prywatny bieżącego klienta.
+
 ## Przypadki historyczne
 
-Pod `/cases` senior/admin może podać system, tytuł, opis zgłoszenia, rozwiązanie oraz opcjonalnie kod błędu, wersję i środowisko. Przypadek jest używany tylko w analizie swojego systemu.
+Pod `/cases` senior/admin może podać system, zakres globalny albo prywatny klienta, tytuł, opis zgłoszenia, rozwiązanie oraz opcjonalnie kod błędu, wersję i środowisko. Przypadek jest używany tylko w analizie swojego systemu i — dla zakresu prywatnego — wskazanego klienta.
 
 ## Dokumentacja techniczna
 

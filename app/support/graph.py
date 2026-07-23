@@ -116,9 +116,9 @@ def history_agent_node(state: SupportState):
               ticket_description||E'\nRozwiązanie: '||resolution chunk_text,title,
               NULL::bigint client_id,NULL::real vector_score,NULL::real text_score
               FROM support.historical_cases
-              WHERE program_id=%s AND status='approved'
+              WHERE program_id=%s AND status='approved' AND (client_id IS NULL OR client_id=%s)
               ORDER BY created_at DESC LIMIT %s""",
-            (state["program_id"], limit),
+            (state["program_id"],state["client_id"],limit),
         )
         safe=[]; redactions=[]
         for raw in cur.fetchall():

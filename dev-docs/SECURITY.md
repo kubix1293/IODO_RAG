@@ -14,5 +14,6 @@
 - Panel nie pozwala zmieniać sekretów, adresów usług ani danych połączenia z bazą. Edytowalne parametry mają walidowane zakresy po stronie API.
 - Przed wejściem zgłoszenia do StateGraph oraz przed zapisaniem wyników agentów do checkpointów redagowane są: e-mail, PESEL/inne identyfikatory 11-cyfrowe, telefon, NIP, REGON, IBAN, IP, jawnie oznaczone dane logowania, osoba, adres i klient. Zewnętrzny prompt nie zawiera nazw plików źródłowych ani nazwy klienta.
 - Zewnętrzne API otrzymuje pseudonim klienta HMAC `K-…`. Mapowanie pozostaje lokalne. Detekcja wzorcami nie daje gwarancji rozpoznania dowolnej informacji wrażliwej zapisanej nietypowo; przed użyciem produkcyjnym wymagane są testy DLP na reprezentatywnych zgłoszeniach oraz umowa z dostawcą dotycząca retencji i trenowania.
+- Kurator wiedzy działa wyłącznie po akcji seniora/admina. Model nie zapisuje bezpośrednio do bazy: jego akcja i identyfikatory są walidowane, a prywatna metoda klienta nie może zmodyfikować rozwiązania globalnego ani innego klienta.
 
 Przed pilotem należy ustawić losowe `SUPPORT_SESSION_SECRET`, zgodne `SUPPORT_CHECKPOINT_KEY` i `LANGGRAPH_AES_KEY`, zmienić hasło bootstrap i wystawić panel wyłącznie przez HTTPS/VPN.

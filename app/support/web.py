@@ -10,8 +10,9 @@ from iodo_rag.parsers import parse_document
 from iodo_rag.vector import to_pgvector
 from .config import settings
 from .db import application_settings, audit, connect, create_session, session_user
-from .security import anonymize, hash_password, ip_hash, require_role, token, verify_password
+from .security import anonymize, client_reference, hash_password, ip_hash, require_role, token, verify_password
 from .workflow import validate_feedback
+from .learning import curate_knowledge
 
 app=FastAPI(title="IODO Support",version="1.0.0")
 
@@ -79,6 +80,7 @@ class FeedbackIn(BaseModel): attempt_id:uuid.UUID; outcome:str; comment:str|None
 class CloseIn(BaseModel): final_attempt_id:uuid.UUID|None=None
 class HistoricalCaseIn(BaseModel):
     program_id:int
+    client_id:int|None=None
     title:str=Field(min_length=3,max_length=240)
     ticket_description:str=Field(min_length=10)
     resolution:str=Field(min_length=10)
@@ -92,6 +94,7 @@ class ResolutionReportIn(BaseModel):
     comment:str|None=None
 class PublishResolutionIn(BaseModel):
     title:str=Field(min_length=3,max_length=240)
+    scope:str=Field(pattern="^(global|client)$")
 class AdminUserIn(BaseModel):
     username:str=Field(min_length=3,max_length=80,pattern=r"^[A-Za-z0-9._-]+$")
     password:str=Field(min_length=12,max_length=200)
@@ -160,6 +163,7 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
           JOIN public.clients c ON c.id=t.client_id JOIN support.programs p ON p.id=t.program_id WHERE t.id=%s""",(ticket_id,)); ticket=cur.fetchone()
         if not ticket: raise HTTPException(404,"Nie znaleziono zgłoszenia")
         cur.execute("SELECT * FROM support.ticket_resolution_reports WHERE ticket_id=%s",(ticket_id,)); report=cur.fetchone()
+        cur.execute("SELECT provider,scope,decision,created_at FROM support.knowledge_curation_runs WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1",(ticket_id,)); curation=cur.fetchone()
         cur.execute("SELECT status,last_error,updated_at FROM support.support_jobs WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1",(ticket_id,)); job=cur.fetchone()
     state=dict(ticket["workflow_state"] or {}); answer_text=state.get("proposed_answer") or ("Analiza czeka na uzupełnienie danych." if ticket["status"]=="needs_information" else "Analiza nie została jeszcze wykonana."); answer=html.escape(answer_text)
     provider_labels={"external_api":"zewnętrzne API","ollama_fallback":"lokalna Ollama (fallback)","ollama_local":"lokalna Ollama"}
@@ -173,10 +177,14 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
     csrf_value=html.escape(current["csrf_token"],quote=True); report_html=""
     if report:
         published=f"<p><strong>Opublikowane rozwiązanie ID:</strong> {report['published_solution_id']}</p>" if report["published_solution_id"] else ""
-        report_html=f"<section><h2>Raport realizacji</h2><p>Wynik: {html.escape(report['outcome'])}; ocena podpowiedzi: {report['suggestion_rating']}/5</p><pre>{html.escape(report['actual_resolution'])}</pre>{published}</section>"
+        curation_html=""
+        if curation:
+            decision=curation["decision"] or {}
+            curation_html=f"<p><strong>Kurator wiedzy:</strong> {html.escape(str(decision.get('action') or ''))} · {html.escape(curation['scope'])} · {html.escape(curation['provider'])}</p><p>{html.escape(str(decision.get('reason') or ''))}</p>"
+        report_html=f"<section><h2>Raport realizacji</h2><p>Wynik: {html.escape(report['outcome'])}; ocena podpowiedzi: {report['suggestion_rating']}/5</p><pre>{html.escape(report['actual_resolution'])}</pre>{published}{curation_html}</section>"
     senior_publish=""
     if current["role"] in {"senior_technician","admin"} and report and not report["published_solution_id"]:
-        senior_publish="""<section><h2>Publikacja do bazy wiedzy</h2><form id='publish-form'><label>Tytuł rozwiązania<input name='title' minlength='3' required></label><button>Opublikuj zatwierdzone rozwiązanie</button></form><div id='publish-message'></div></section>"""
+        senior_publish="""<section><h2>Publikacja do bazy wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą i połączy, uzupełni albo utworzy właściwy wątek.</p><form id='publish-form'><label>Tytuł rozwiązania<input name='title' minlength='3' required></label><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Przeanalizuj i opublikuj rozwiązanie</button></form><div id='publish-message'></div></section>"""
     running=bool(job and job["status"] in {"queued","running"}); auto_refresh="setTimeout(()=>location.reload(),3000);" if running else ""
     progress_html="<div id='work-status' class='progress'><span class='spinner'></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span></div>" if running else "<div id='work-status'></div>"
     clarification_html=""
@@ -192,7 +200,7 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
     <section><h2>Opis zgłoszenia</h2><pre>{html.escape(ticket['description'])}</pre><button id='analyse'>Uruchom / ponów analizę modelu</button></section>
     <section><h2>Proponowana odpowiedź</h2>{provider_note}<pre>{answer}</pre><h3>Źródła</h3>{source_html}</section>
     <section><h2>Zgłoś realizację i oceń podpowiedź</h2><form id='report-form'><label>Wynik<select name='outcome'><option value='helped'>Pomogła</option><option value='partially_helped'>Częściowo pomogła</option><option value='not_helped'>Nie pomogła</option></select></label><label>Ocena podpowiedzi 1–5<input name='suggestion_rating' type='number' min='1' max='5' value='3' required></label><label>Faktycznie zastosowane rozwiązanie<textarea name='actual_resolution' minlength='10' required></textarea></label><label>Komentarz<textarea name='comment'></textarea></label><button>Zapisz raport realizacji</button></form><div id='report-message'></div></section>{report_html}{senior_publish}
-    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});document.getElementById('report-message').textContent=r.ok?'Raport zapisany. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Rozwiązanie opublikowane. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};{auto_refresh}</script></html>""",current,"tickets")
+    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});document.getElementById('report-message').textContent=r.ok?'Raport zapisany. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Kurator AI porównuje rozwiązanie z bazą wiedzy…';const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Wiedza przeanalizowana i opublikowana. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};{auto_refresh}</script></html>""",current,"tickets")
 
 @app.get("/tickets/new",response_class=HTMLResponse)
 def new_ticket_page(current=Depends(user)):
@@ -243,18 +251,23 @@ def cases_page(current=Depends(user)):
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT id,name FROM support.programs WHERE active ORDER BY name")
         programs=cur.fetchall()
+        cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
+        clients=cur.fetchall()
     options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
+    client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
     csrf_value=html.escape(current["csrf_token"],quote=True)
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Przypadki serwisowe</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:8rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
     <div class='desk-kicker'>Wiedza serwisowa</div><h1>Dodaj przypadek serwisowy</h1><p>Każdy przypadek należy dokładnie do jednego systemu. Dane ZZL i ASW są wyszukiwane oddzielnie.</p>
     <section><form id='case-form'><label>System<select name='program_id' required>{options}</select></label>
+    <label>Zakres<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla klienta</option></select></label>
+    <label id='case-client-label' hidden>Klient<select name='client_id'><option value=''>Wybierz klienta</option>{client_options}</select></label>
     <label>Tytuł<input name='title' minlength='3' required></label>
     <label>Opis zgłoszenia<textarea name='ticket_description' minlength='10' required></textarea></label>
     <label>Rozwiązanie<textarea name='resolution' minlength='10' required></textarea></label>
     <label>Kod błędu<input name='error_code'></label><label>Wersja<input name='version'></label><label>Środowisko<input name='environment'></label>
     <button type='submit'>Zapisz przypadek</button></form><div id='message'></div></section>
-    <script>document.getElementById('case-form').addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());body.program_id=Number(body.program_id);for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok)e.target.reset();}});</script></html>""",current,"cases")
+    <script>const caseForm=document.getElementById('case-form');const caseClientLabel=document.getElementById('case-client-label');caseForm.scope.onchange=()=>caseClientLabel.hidden=caseForm.scope.value!=='client';caseForm.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());if(body.scope==='client'&&!body.client_id){{document.getElementById('message').textContent='Wybierz klienta.';return;}}body.program_id=Number(body.program_id);body.client_id=body.scope==='client'?Number(body.client_id):null;delete body.scope;for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok){{e.target.reset();caseClientLabel.hidden=true;}}}});</script></html>""",current,"cases")
 
 @app.get("/settings",response_class=HTMLResponse)
 def settings_page(current=Depends(user)):
@@ -436,21 +449,75 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
     require_role(current,"senior_technician")
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT t.*,r.id report_id,r.actual_resolution,r.published_solution_id
-          FROM support.tickets t JOIN support.ticket_resolution_reports r ON r.ticket_id=t.id WHERE t.id=%s FOR UPDATE""",(ticket_id,)); row=cur.fetchone()
+          FROM support.tickets t JOIN support.ticket_resolution_reports r ON r.ticket_id=t.id WHERE t.id=%s""",(ticket_id,)); row=cur.fetchone()
         if not row: raise HTTPException(409,"Najpierw zapisz raport realizacji")
         if row["published_solution_id"]: raise HTTPException(409,"Rozwiązanie zostało już opublikowane")
-        cur.execute("SELECT problem_id FROM support.ticket_problem_links WHERE ticket_id=%s AND status='confirmed' ORDER BY decided_at DESC NULLS LAST LIMIT 1",(ticket_id,)); linked=cur.fetchone()
-        if linked: problem_id=linked["problem_id"]
-        else:
-            cur.execute("INSERT INTO support.canonical_problems(program_id,title,normalized_description) VALUES(%s,%s,%s) RETURNING id",(row["program_id"],body.title,row["description"])); problem_id=cur.fetchone()["id"]
-            cur.execute("INSERT INTO support.ticket_problem_links(ticket_id,problem_id,status,decided_by,decided_at) VALUES(%s,%s,'confirmed',%s,now())",(ticket_id,problem_id,current["id"]))
-        cur.execute("""INSERT INTO support.solutions(problem_id,title,summary,status,created_by,approved_by,approved_at)
-          VALUES(%s,%s,%s,'approved',%s,%s,now()) RETURNING id""",(problem_id,body.title,row["actual_resolution"],current["id"],current["id"])); solution_id=cur.fetchone()["id"]
-        cur.execute("INSERT INTO support.solution_steps(solution_id,position,instruction,expected_result) VALUES(%s,1,%s,'Problem rozwiązany')",(solution_id,row["actual_resolution"]))
-        case_id=uuid.uuid4(); cur.execute("""INSERT INTO support.historical_cases(id,program_id,title,ticket_description,resolution,status,created_by)
-          VALUES(%s,%s,%s,%s,%s,'approved',%s)""",(case_id,row["program_id"],body.title,row["description"],row["actual_resolution"],current["id"]))
-        cur.execute("UPDATE support.ticket_resolution_reports SET published_solution_id=%s,published_at=now() WHERE id=%s",(solution_id,row["report_id"])); audit(cur,current["id"],"publish_resolution","ticket",ticket_id,{"solution_id":solution_id,"historical_case_id":str(case_id)})
-    return {"solution_id":solution_id,"historical_case_id":case_id,"status":"approved"}
+        target_client_id=row["client_id"] if body.scope=="client" else None
+        cur.execute("""SELECT p.id problem_id,p.title problem_title,p.normalized_description problem_description,
+          s.id solution_id,s.title solution_title,s.summary solution_summary,s.client_id solution_client_id
+          FROM support.canonical_problems p
+          LEFT JOIN support.solutions s ON s.problem_id=p.id AND s.status='approved'
+            AND (s.client_id IS NULL OR (%s='client' AND s.client_id=%s))
+          WHERE p.program_id=%s ORDER BY p.created_at DESC,s.created_at DESC LIMIT 40""",
+          (body.scope,target_client_id,row["program_id"]))
+        candidates=cur.fetchall()
+        try:
+            decision,provider,curation_error=curate_knowledge(
+                cur,row["description"],row["actual_resolution"],body.title,candidates,
+                client_reference(row["client_id"],settings.session_secret),
+            )
+        except Exception as exc:
+            decision={"action":"new_problem","problem_id":None,"solution_id":None,"confidence":0.0,
+                      "reason":"Bezpieczny fallback po błędzie kuratora","canonical_title":body.title,
+                      "canonical_description":row["description"]}
+            provider="deterministic_fallback"; curation_error=str(exc)[:300]
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT published_solution_id FROM support.ticket_resolution_reports WHERE id=%s FOR UPDATE",(row["report_id"],))
+        locked=cur.fetchone()
+        if not locked or locked["published_solution_id"]: raise HTTPException(409,"Rozwiązanie zostało już opublikowane")
+        action=decision["action"]; problem_id=decision.get("problem_id"); solution_id=decision.get("solution_id")
+        if action=="new_problem":
+            cur.execute("INSERT INTO support.canonical_problems(program_id,title,normalized_description) VALUES(%s,%s,%s) RETURNING id",
+                        (row["program_id"],decision["canonical_title"],decision["canonical_description"]))
+            problem_id=cur.fetchone()["id"]
+        if action=="supplement":
+            cur.execute("SELECT client_id FROM support.solutions WHERE id=%s AND problem_id=%s AND status='approved'",(solution_id,problem_id))
+            selected=cur.fetchone()
+            if not selected: raise HTTPException(409,"Wybrane rozwiązanie nie jest już dostępne")
+            if selected["client_id"]!=target_client_id:
+                action="new_solution"; solution_id=None
+            else:
+                cur.execute("""INSERT INTO support.solution_steps(solution_id,position,instruction,expected_result)
+                  SELECT %s,COALESCE(max(position),0)+1,%s,'Problem rozwiązany' FROM support.solution_steps
+                  WHERE solution_id=%s AND NOT EXISTS(
+                    SELECT 1 FROM support.solution_steps WHERE solution_id=%s AND lower(trim(instruction))=lower(trim(%s))
+                  ) GROUP BY solution_id""",(solution_id,row["actual_resolution"],solution_id,solution_id,row["actual_resolution"]))
+        if action in {"new_problem","new_solution"}:
+            cur.execute("""INSERT INTO support.solutions(problem_id,client_id,title,summary,status,created_by,approved_by,approved_at)
+              VALUES(%s,%s,%s,%s,'approved',%s,%s,now()) RETURNING id""",
+              (problem_id,target_client_id,body.title,row["actual_resolution"],current["id"],current["id"]))
+            solution_id=cur.fetchone()["id"]
+            cur.execute("INSERT INTO support.solution_steps(solution_id,position,instruction,expected_result) VALUES(%s,1,%s,'Problem rozwiązany')",
+                        (solution_id,row["actual_resolution"]))
+        cur.execute("""INSERT INTO support.ticket_problem_links(ticket_id,problem_id,status,decided_by,decided_at)
+          VALUES(%s,%s,'confirmed',%s,now()) ON CONFLICT(ticket_id,problem_id) DO UPDATE
+          SET status='confirmed',decided_by=excluded.decided_by,decided_at=now()""",(ticket_id,problem_id,current["id"]))
+        case_id=uuid.uuid4()
+        cur.execute("""INSERT INTO support.historical_cases(
+          id,program_id,client_id,canonical_problem_id,solution_id,title,ticket_description,resolution,status,created_by)
+          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'approved',%s)""",
+          (case_id,row["program_id"],target_client_id,problem_id,solution_id,body.title,row["description"],row["actual_resolution"],current["id"]))
+        decision={**decision,"action":action,"problem_id":problem_id,"solution_id":solution_id,"error":curation_error}
+        run_id=uuid.uuid4()
+        cur.execute("""INSERT INTO support.knowledge_curation_runs(id,ticket_id,actor_id,client_id,scope,provider,decision)
+          VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb)""",
+          (run_id,ticket_id,current["id"],target_client_id,body.scope,provider,json.dumps(decision)))
+        cur.execute("UPDATE support.ticket_resolution_reports SET published_solution_id=%s,published_at=now() WHERE id=%s",
+                    (solution_id,row["report_id"]))
+        audit(cur,current["id"],"curate_and_publish","ticket",ticket_id,
+              {"solution_id":solution_id,"problem_id":problem_id,"action":action,"scope":body.scope,"provider":provider})
+    return {"problem_id":problem_id,"solution_id":solution_id,"historical_case_id":case_id,
+            "curation_action":action,"provider":provider,"status":"approved"}
 
 @app.post("/api/v1/knowledge/documents",status_code=202)
 def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):
@@ -479,18 +546,22 @@ def create_historical_case(body:HistoricalCaseIn,current=Depends(csrf)):
         cur.execute("SELECT name FROM support.programs WHERE id=%s AND active",(body.program_id,))
         program=cur.fetchone()
         if not program: raise HTTPException(404,"Nie znaleziono aktywnego systemu")
-        cur.execute("""INSERT INTO support.historical_cases(id,program_id,title,ticket_description,resolution,error_code,version,environment,created_by)
-          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-          (case_id,body.program_id,body.title,body.ticket_description,body.resolution,body.error_code,body.version,body.environment,current["id"]))
-        row=cur.fetchone(); audit(cur,current["id"],"create","historical_case",case_id,{"program_id":body.program_id,"program":program["name"]})
+        if body.client_id:
+            cur.execute("SELECT 1 FROM public.clients WHERE id=%s",(body.client_id,))
+            if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono klienta")
+        cur.execute("""INSERT INTO support.historical_cases(id,program_id,client_id,title,ticket_description,resolution,error_code,version,environment,created_by)
+          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+          (case_id,body.program_id,body.client_id,body.title,body.ticket_description,body.resolution,body.error_code,body.version,body.environment,current["id"]))
+        row=cur.fetchone(); audit(cur,current["id"],"create","historical_case",case_id,
+                                  {"program_id":body.program_id,"program":program["name"],"client_id":body.client_id})
     return row
 
 @app.get("/api/v1/cases")
 def list_historical_cases(program_id:int,current=Depends(user)):
     require_role(current,"senior_technician")
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT c.id,c.program_id,p.name program,c.title,c.ticket_description,c.resolution,c.error_code,c.version,c.environment,c.status,c.created_at
-          FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id
+        cur.execute("""SELECT c.id,c.program_id,p.name program,c.client_id,cl.name client_name,c.title,c.ticket_description,c.resolution,c.error_code,c.version,c.environment,c.status,c.created_at
+          FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id LEFT JOIN public.clients cl ON cl.id=c.client_id
           WHERE c.program_id=%s AND c.status<>'retired' ORDER BY c.created_at DESC""",(program_id,))
         return {"program_id":program_id,"cases":cur.fetchall()}
 

@@ -4,7 +4,7 @@ OpenAPI jest pod `/docs`. Endpointy obejmują logowanie/wylogowanie, CRUD przebi
 
 Przypadki historyczne:
 
-- `POST /api/v1/cases` — dodanie opisu zgłoszenia i rozwiązania przez seniora/admina;
+- `POST /api/v1/cases` — dodanie opisu zgłoszenia i rozwiązania przez seniora/admina; opcjonalny `client_id` ustawia zakres prywatny;
 - `GET /api/v1/cases?program_id={id}` — lista wyłącznie jednego wskazanego systemu;
 - `GET /cases` — formularz panelu dla seniora/admina.
 
@@ -14,7 +14,9 @@ Stanowisko pracy zgłoszenia:
 
 - `GET /tickets` i `GET /tickets/{id}/view` — lista oraz podgląd opisu, odpowiedzi modelu i źródeł;
 - `POST /api/v1/tickets/{id}/resolution-report` — wynik realizacji, ocena 1–5 i faktyczna metoda;
-- `POST /api/v1/tickets/{id}/publish-resolution` — publikacja metody przez seniora/admina jako zatwierdzone rozwiązanie i przypadek historyczny.
+- `POST /api/v1/tickets/{id}/publish-resolution` — modelowa kuracja i publikacja metody przez seniora/admina; przyjmuje `title` i `scope=global|client`, zwraca `curation_action` oraz `provider`.
+
+Kurator może wskazać istniejące `problem_id` i `solution_id`, ale serwer akceptuje wyłącznie ID wcześniej przekazane modelowi jako kandydaci tego systemu i zakresu.
 
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.
 

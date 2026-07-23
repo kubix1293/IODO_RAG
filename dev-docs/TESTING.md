@@ -5,3 +5,5 @@ Testy jednostkowe uruchamia `pytest tests`. Krytyczne integracje: migracja na pu
 Przed pilotem wymagany jest zanonimizowany zestaw minimum 30 przypadków: co najmniej 80% właściwych problemów w top 5 i rozwiązań w top 3. Warunkiem bezwzględnym jest brak wycieku między klientami. E2E obejmuje oba tryby procedury, odrzucenie powiązania, każdy feedback, draft i akceptację seniora.
 
 Lokalny test `tests/integration_smoke.py` tworzy oznaczone dane testowe i sprawdza login, CSRF, kolejkę workera, workflow krokowy, feedback, zamknięcie, audyt, RBAC oraz izolację dwóch klientów. Uruchamiać wyłącznie na środowisku nieprodukcyjnym.
+
+`tests/curation_smoke.py` tworzy tymczasowy problem, rozwiązanie, zgłoszenie i raport, wywołuje kuratora przez API, sprawdza użycie modelu zewnętrznego, prywatny zakres klienta i zapis decyzji, a następnie usuwa własne dane testowe.
