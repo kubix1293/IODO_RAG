@@ -72,9 +72,12 @@ Administrator ma w menu pozycję **Ustawienia** (`/settings`). Może tam:
 
 - utworzyć konto serwisanta, starszego serwisanta albo administratora;
 - dodać klienta do katalogu używanego przy nowych zgłoszeniach;
-- ustawić czas oczekiwania na Ollamę, limit tokenów odpowiedzi, liczbę kandydatów i źródeł oraz rozmiar i nakładanie fragmentów dokumentacji.
+- ustawić czas oczekiwania na Ollamę, limit tokenów odpowiedzi, liczbę kandydatów i źródeł oraz rozmiar i nakładanie fragmentów dokumentacji;
+- włączyć zewnętrzny model jako pierwszy wybór albo natychmiast przełączyć system na samą lokalną Ollamę.
 
 Parametry obowiązują przy kolejnej analizie lub imporcie i nie wymagają restartu kontenerów. Zmiany zapisują się w audycie. Sekrety i adresy infrastruktury nadal konfiguruje się wyłącznie przez środowisko uruchomieniowe.
+
+Po analizie stanowisko zgłoszenia pokazuje użyty generator: `zewnętrzne API`, `lokalna Ollama (fallback)` albo `lokalna Ollama`, a także liczbę wykonanych redakcji danych.
 
 ## Statusy i wznowienie
 

@@ -12,4 +12,6 @@ Odpowiedź asystenta ma limit 500 tokenów. Na obecnym CPU generowanie może trw
 
 Timeout połączenia workera z Ollamą jest sterowany przez `LLM_TIMEOUT_SECONDS` (wdrożenie: 1800 s). Nie należy ustawiać go poniżej czasu generowania 500 tokenów na docelowym CPU. Ponowienie czyści poprzedni komunikat błędu i ustawia zgłoszenie na `in_progress`.
 
+Zewnętrzny generator konfiguruje się wyłącznie przez sekrety środowiskowe `EXTERNAL_LLM_URL`, `EXTERNAL_LLM_MODEL`, `EXTERNAL_LLM_API_KEY` i `EXTERNAL_LLM_TIMEOUT_SECONDS`. URL ma wskazywać endpoint zgodny z OpenAI Chat Completions. Bez kompletu tych wartości albo po błędzie API worker automatycznie użyje Ollamy. Przełącznik biznesowy znajduje się w `/settings`.
+
 Backup musi obejmować bazę PostgreSQL i `/data/support-uploads`. Odtworzenie należy ćwiczyć przed pilotem. Worker jest bezstanowy i może mieć wiele replik.

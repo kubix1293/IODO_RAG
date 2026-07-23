@@ -3,6 +3,8 @@ import json, os, socket, time
 from .checkpoints import encrypt
 from .db import connect
 from .graph import enrich_description, invoke_support_graph, json_safe
+from .security import anonymize_with_report, client_reference
+from .config import settings
 
 WORKER=f"{socket.gethostname()}:{os.getpid()}"
 
@@ -18,9 +20,15 @@ def process(job):
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT * FROM support.tickets WHERE id=%s FOR UPDATE",(job["ticket_id"],)); ticket=dict(cur.fetchone())
         state=dict(ticket["workflow_state"] or {}); answers=state.get("answers") or {}
+    safe_description,redactions=anonymize_with_report(ticket["description"])
+    safe_answers={}
+    for key,value in answers.items():
+        safe_value,found=anonymize_with_report(str(value)); safe_answers[key]=safe_value; redactions.extend(found)
     result=invoke_support_graph({
         "ticket_id":str(ticket["id"]),"client_id":ticket["client_id"],"program_id":ticket["program_id"],
-        "description":ticket["description"],"answers":answers,"history_candidates":[],"documentation_candidates":[],
+        "client_ref":client_reference(ticket["client_id"],settings.session_secret),
+        "description":safe_description,"answers":safe_answers,"privacy_redactions":redactions,
+        "history_candidates":[],"documentation_candidates":[],"history_redactions":[],"documentation_redactions":[],
     })
     state=json_safe(dict(result)); recognized=state["recognized"]; status=state["status"]
     with connect() as conn, conn.cursor() as cur:

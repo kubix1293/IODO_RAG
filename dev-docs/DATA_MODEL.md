@@ -20,3 +20,5 @@ Globalna wiedza ma `client_id IS NULL`; prywatna ma `scope=client` i klienta. Ka
 `ticket_resolution_reports` przechowuje wynik realizacji, ocenę podpowiedzi 1–5 oraz faktycznie zastosowaną metodę. Jeden raport przypada na zgłoszenie. Po publikacji przez seniora wskazuje utworzone zatwierdzone rozwiązanie.
 
 Migracja `0004_application_settings` dodaje ustawienia typu klucz–wartość wraz z administratorem i czasem ostatniej zmiany. Do bazy trafiają wyłącznie kontrolowane wartości liczbowe; sekrety pozostają w środowisku uruchomieniowym.
+
+Migracja `0005_external_llm` dodaje przełącznik `external_llm_enabled`. Domyślna wartość włącza strategię external-first, ale brak kompletnej konfiguracji dostawcy powoduje bezpieczny fallback do Ollamy.

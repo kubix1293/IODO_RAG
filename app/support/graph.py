@@ -15,13 +15,14 @@ from psycopg.rows import dict_row
 
 from .config import settings
 from .db import application_settings, connect
-from .security import anonymize
+from .security import anonymize_with_report
 from .workflow import interpret_locally
 
 
 class SupportState(TypedDict, total=False):
     ticket_id: str
     client_id: int
+    client_ref: str
     program_id: int
     description: str
     answers: dict
@@ -32,8 +33,13 @@ class SupportState(TypedDict, total=False):
     questions: list[str]
     history_candidates: list[dict]
     documentation_candidates: list[dict]
+    history_redactions: list[str]
+    documentation_redactions: list[str]
     sources: list[dict]
     proposed_answer: str
+    privacy_redactions: list[str]
+    llm_provider: str
+    external_llm_error: str
 
 
 def enrich_description(description: str, answers: dict) -> str:
@@ -114,7 +120,12 @@ def history_agent_node(state: SupportState):
               ORDER BY created_at DESC LIMIT %s""",
             (state["program_id"], limit),
         )
-        return {"history_candidates": [dict(row) for row in cur.fetchall()]}
+        safe=[]; redactions=[]
+        for raw in cur.fetchall():
+            row=dict(raw); row["chunk_text"],found=anonymize_with_report(row["chunk_text"])
+            row["title"],title_found=anonymize_with_report(row.get("title") or "")
+            safe.append(row); redactions.extend(found+title_found)
+        return {"history_candidates":safe,"history_redactions":redactions}
 
 
 def documentation_agent_node(state: SupportState):
@@ -142,7 +153,12 @@ def documentation_agent_node(state: SupportState):
                 limit,
             ),
         )
-        return {"documentation_candidates": [dict(row) for row in cur.fetchall()]}
+        safe=[]; redactions=[]
+        for raw in cur.fetchall():
+            row=dict(raw); row["chunk_text"],found=anonymize_with_report(row["chunk_text"])
+            row["title"],title_found=anonymize_with_report(row.get("title") or "")
+            safe.append(row); redactions.extend(found+title_found)
+        return {"documentation_candidates":safe,"documentation_redactions":redactions}
 
 
 def reranking_node(state: SupportState):
@@ -153,17 +169,65 @@ def reranking_node(state: SupportState):
     with connect() as conn, conn.cursor() as cur:
         top_sources = application_settings(cur)["retrieval_top_sources"]
     selected = sorted(candidates, key=lambda row: row["rerank_score"], reverse=True)[:top_sources]
-    safe = json_safe([{**row, "chunk_text": anonymize(row["chunk_text"])} for row in selected])
-    return {"sources": safe, "step": "answer_generation"}
+    safe=[]; redactions=list(state.get("privacy_redactions") or [])
+    redactions.extend(state.get("history_redactions") or [])
+    redactions.extend(state.get("documentation_redactions") or [])
+    for row in selected:
+        chunk,found=anonymize_with_report(row["chunk_text"])
+        title,title_found=anonymize_with_report(row.get("title") or "")
+        redactions.extend(found+title_found)
+        safe.append(json_safe({**row,"title":title,"chunk_text":chunk}))
+    return {"sources":safe,"privacy_redactions":redactions,"step":"answer_generation"}
+
+
+def external_llm_answer(prompt:str,runtime:dict)->str:
+    if not settings.external_llm_url or not settings.external_llm_model or not settings.external_llm_api_key:
+        raise RuntimeError("Zewnętrzne API LLM nie jest skonfigurowane")
+    response=requests.post(
+        settings.external_llm_url,
+        headers={"Authorization":f"Bearer {settings.external_llm_api_key}","Content-Type":"application/json"},
+        json={"model":settings.external_llm_model,"messages":[{"role":"user","content":prompt}],
+              "temperature":0.1,"max_tokens":runtime["llm_response_tokens"]},
+        timeout=settings.external_llm_timeout_seconds,
+    )
+    response.raise_for_status()
+    answer=response.json()["choices"][0]["message"]["content"].strip()
+    if not answer: raise RuntimeError("Zewnętrzne API zwróciło pustą odpowiedź")
+    return answer
+
+
+def local_llm_answer(prompt:str,runtime:dict)->str:
+    response=requests.post(
+        f"{settings.llm_url}/api/generate",
+        json={"model":settings.llm_model,"prompt":prompt,"stream":False,
+              "options":{"temperature":0.1,"num_predict":runtime["llm_response_tokens"]}},
+        timeout=runtime["llm_timeout_seconds"],
+    )
+    response.raise_for_status()
+    return response.json().get("response","").strip()
+
+
+def hybrid_llm_answer(prompt:str,runtime:dict)->tuple[str,str,str]:
+    external_error=""
+    if runtime["external_llm_enabled"]:
+        try:
+            return external_llm_answer(prompt,runtime),"external_api",""
+        except Exception as exc:
+            external_error=str(exc)[:300]
+    answer=local_llm_answer(prompt,runtime)
+    provider="ollama_fallback" if runtime["external_llm_enabled"] else "ollama_local"
+    return answer,provider,external_error
 
 
 def answer_node(state: SupportState):
     sources = state.get("sources") or []
     context = "\n\n".join(
-        f"[{index + 1}] {row.get('kind')}: {row.get('title') or ''}\n{row['chunk_text'][:1400]}"
+        f"[{index + 1}] {row.get('kind')} / źródło {row.get('id')}\n{row['chunk_text'][:1400]}"
         for index, row in enumerate(sources)
     )
-    prompt = f"""Jesteś asystentem serwisowym. Na podstawie wyłącznie źródeł zaproponuj bezpieczną diagnozę i czynności. Nie twierdź, że czynność wykonano. Jeśli źródła są niewystarczające, napisz czego brakuje. Odpowiedz po polsku, numerując kroki i wskazując numery źródeł.
+    prompt = f"""Jesteś asystentem serwisowym. Na podstawie wyłącznie źródeł zaproponuj bezpieczną diagnozę i czynności. Nie twierdź, że czynność wykonano. Jeśli źródła są niewystarczające, napisz czego brakuje. Odpowiedz po polsku, numerując kroki i wskazując numery źródeł. Referencja klienta jest pseudonimem i służy wyłącznie do zachowania kontekstu powtarzalności.
+
+REFERENCJA KLIENTA: {state["client_ref"]}
 
 ZGŁOSZENIE:
 {state["effective_description"]}
@@ -172,19 +236,11 @@ ZGŁOSZENIE:
 {context or "Brak trafnych źródeł."}"""
     with connect() as conn, conn.cursor() as cur:
         runtime = application_settings(cur)
-    response = requests.post(
-        f"{settings.llm_url}/api/generate",
-        json={
-            "model": settings.llm_model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.1, "num_predict": runtime["llm_response_tokens"]},
-        },
-        timeout=runtime["llm_timeout_seconds"],
-    )
-    response.raise_for_status()
+    answer,provider,external_error=hybrid_llm_answer(prompt,runtime)
     return {
-        "proposed_answer": response.json().get("response", "").strip(),
+        "proposed_answer":answer,
+        "llm_provider":provider,
+        "external_llm_error":external_error,
         "status": "awaiting_problem_decision",
         "step": "problem_decision",
     }

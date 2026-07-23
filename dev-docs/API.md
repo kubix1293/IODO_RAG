@@ -24,3 +24,5 @@ Administracja (wyłącznie `admin`):
 - `POST /api/v1/admin/users` — utworzenie konta i przypisanie roli;
 - `POST /api/v1/admin/clients` — dodanie klienta do wspólnego katalogu;
 - `POST /api/v1/admin/settings` — zapis kontrolowanych parametrów analizy i importu.
+
+Pole `external_llm_enabled` przełącza strategię generowania: `true` oznacza zewnętrzne API jako pierwszy wybór z automatycznym fallbackiem do Ollamy, `false` wymusza wyłącznie Ollamę. Endpoint nie przyjmuje kluczy API.

@@ -21,11 +21,29 @@ def token() -> str: return secrets.token_urlsafe(32)
 def ip_hash(ip: str, secret: str) -> str: return hmac.new(secret.encode(), ip.encode(), hashlib.sha256).hexdigest()
 
 _SENSITIVE = [
-    (re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
-    (re.compile(r"\b(?:\+?48\s*)?(?:\d[ -]?){9}\b"), "[TELEFON]"),
-    (re.compile(r"\b\d{11}\b"), "[IDENTYFIKATOR]"),
-    (re.compile(r"(?i)\b(?:klient|firma|spółka)\s+[\w.-]+"), "[KLIENT]"),
+    ("email", re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"), "[EMAIL]"),
+    ("pesel_or_id", re.compile(r"(?<!\d)(?:\d[ -]?){11}(?!\d)"), "[PESEL_LUB_ID]"),
+    ("iban", re.compile(r"\bPL\s?(?:\d[ ]?){26}\b", re.I), "[RACHUNEK_BANKOWY]"),
+    ("nip", re.compile(r"(?i)\bNIP\s*[:\-]?\s*(?:\d[ -]?){10}\b"), "[NIP]"),
+    ("regon", re.compile(r"(?i)\bREGON\s*[:\-]?\s*(?:\d[ -]?){9,14}\b"), "[REGON]"),
+    ("phone", re.compile(r"(?<!\d)(?:\+?48[ -]?)?(?:\d[ -]?){9}(?!\d)"), "[TELEFON]"),
+    ("ip", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ADRES_IP]"),
+    ("credential", re.compile(r"(?i)\b(?:hasło|password|token|api[_ -]?key)\s*[:=]\s*\S+"), "[DANE_UWIERZYTELNIAJĄCE]"),
+    ("person", re.compile(r"(?i)\b(?:pacjent|osoba|kontakt|imię i nazwisko)\s*[:\-]?\s+[A-ZĄĆĘŁŃÓŚŹŻ][\wąćęłńóśźż-]+(?:\s+[A-ZĄĆĘŁŃÓŚŹŻ][\wąćęłńóśźż-]+){1,2}"), "[OSOBA]"),
+    ("address", re.compile(r"(?i)\b(?:adres|zamieszkał[ay]?)\s*[:\-]\s*[^,;\n]{5,100}"), "[ADRES]"),
+    ("client", re.compile(r"(?i)\b(?:klient|firma|spółka)\s+[\w.-]+"), "[KLIENT]"),
 ]
+
+def anonymize_with_report(text: str) -> tuple[str,list[str]]:
+    found=[]
+    for category,pattern,replacement in _SENSITIVE:
+        text,count=pattern.subn(replacement,text)
+        if count: found.extend([category]*count)
+    return text,found
+
 def anonymize(text: str) -> str:
-    for pattern, replacement in _SENSITIVE: text = pattern.sub(replacement, text)
-    return text
+    return anonymize_with_report(text)[0]
+
+def client_reference(client_id: int, secret: str) -> str:
+    digest=hmac.new(secret.encode(),f"support-client:{client_id}".encode(),hashlib.sha256).hexdigest()
+    return f"K-{digest[:12]}"

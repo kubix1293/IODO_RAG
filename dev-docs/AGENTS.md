@@ -31,3 +31,9 @@ Wyniki obu agentów są przechowywane w osobnych polach stanu, następnie scalan
 Graf używa synchronicznego `PostgresSaver` zgodnego z workerem. `thread_id` jest równy `ticket_id`. Checkpointy LangGraph są szyfrowane AES kluczem wyprowadzonym przez SHA-256 z `SUPPORT_CHECKPOINT_KEY`. Dotychczasowy zaszyfrowany rekord `support.workflow_checkpoints` pozostaje kompatybilnym podglądem stanu dla aplikacji.
 
 Kolejka `support.support_jobs` nadal odpowiada za przejęcie zadania przez worker, retry i status `failed_retryable`. Awaria TEI, rerankera lub Ollamy nie usuwa checkpointów.
+
+## Hybrydowy generator LLM
+
+Węzeł `answer_generation` najpierw wywołuje skonfigurowane API zgodne z OpenAI Chat Completions. Timeout, błąd HTTP, brak konfiguracji albo pusta odpowiedź automatycznie kierują prompt do lokalnej Ollamy. Administrator może wyłączyć API w `/settings`; wtedy Ollama jest używana bez próby zewnętrznej.
+
+Do grafu trafia już zanonimizowany opis. Prompt zawiera pseudonim klienta `K-…` wyprowadzony przez HMAC z wewnętrznego ID, ale nie nazwę klienta. Stan zapisuje `llm_provider`, błąd fallbacku oraz kategorie wykonanych redakcji.
