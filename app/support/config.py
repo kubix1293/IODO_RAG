@@ -8,6 +8,7 @@ class Settings:
     reranker_url: str = os.getenv("RERANKER_URL", "http://reranker:80").rstrip("/")
     llm_url: str = os.getenv("LLM_URL", "http://ollama:11434").rstrip("/")
     llm_model: str = os.getenv("LLM_MODEL", "llama3.2:3b")
+    llm_timeout_seconds: int = int(os.getenv("LLM_TIMEOUT_SECONDS", "1800"))
     session_secret: str = os.getenv("SUPPORT_SESSION_SECRET", "development-only-change-me")
     checkpoint_key: str = os.getenv("SUPPORT_CHECKPOINT_KEY", "")
     upload_root: str = os.getenv("SUPPORT_UPLOAD_ROOT", "/data/support-uploads")

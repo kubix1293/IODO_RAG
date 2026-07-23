@@ -24,7 +24,9 @@ def json_safe(value):
 def claim():
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT * FROM support.support_jobs WHERE status IN ('queued','failed_retryable') AND available_at<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"""); job=cur.fetchone()
-        if job: cur.execute("UPDATE support.support_jobs SET status='running',locked_at=now(),locked_by=%s,attempts=attempts+1,updated_at=now() WHERE id=%s",(WORKER,job["id"]))
+        if job:
+            cur.execute("UPDATE support.support_jobs SET status='running',locked_at=now(),locked_by=%s,attempts=attempts+1,last_error=NULL,updated_at=now() WHERE id=%s",(WORKER,job["id"]))
+            cur.execute("UPDATE support.tickets SET status='in_progress',updated_at=now() WHERE id=%s",(job["ticket_id"],))
         return dict(job) if job else None
 
 def embedding(text:str):
@@ -54,7 +56,7 @@ def propose_answer(query:str,candidates:list[dict]):
     prompt=f"""Jesteś asystentem serwisowym. Na podstawie wyłącznie źródeł zaproponuj bezpieczną diagnozę i czynności. Nie twierdź, że czynność wykonano. Jeśli źródła są niewystarczające, napisz czego brakuje. Odpowiedz po polsku, numerując kroki i wskazując numery źródeł.
 
 ZGŁOSZENIE:\n{query}\n\nŹRÓDŁA:\n{context or 'Brak trafnych źródeł.'}"""
-    response=requests.post(f"{settings.llm_url}/api/generate",json={"model":settings.llm_model,"prompt":prompt,"stream":False,"options":{"temperature":0.1,"num_predict":500}},timeout=240)
+    response=requests.post(f"{settings.llm_url}/api/generate",json={"model":settings.llm_model,"prompt":prompt,"stream":False,"options":{"temperature":0.1,"num_predict":500}},timeout=settings.llm_timeout_seconds)
     response.raise_for_status(); return response.json().get("response","").strip()
 
 def process(job):

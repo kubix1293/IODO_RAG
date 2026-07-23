@@ -10,4 +10,6 @@ Reranker ma ograniczony budżet batcha (`2048` tokenów, 32 równoległe żądan
 
 Odpowiedź asystenta ma limit 500 tokenów. Na obecnym CPU generowanie może trwać około dwóch minut; ekran zgłoszenia automatycznie odświeża status zadania.
 
+Timeout połączenia workera z Ollamą jest sterowany przez `LLM_TIMEOUT_SECONDS` (wdrożenie: 1800 s). Nie należy ustawiać go poniżej czasu generowania 500 tokenów na docelowym CPU. Ponowienie czyści poprzedni komunikat błędu i ustawia zgłoszenie na `in_progress`.
+
 Backup musi obejmować bazę PostgreSQL i `/data/support-uploads`. Odtworzenie należy ćwiczyć przed pilotem. Worker jest bezstanowy i może mieć wiele replik.
