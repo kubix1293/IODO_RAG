@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import re
 import uuid
 from typing import TypedDict
 
@@ -68,17 +69,34 @@ def embedding(text: str):
     return response.json()[0]
 
 
+def lexical_rerank(query:str,texts:list[str])->list[float]:
+    query_tokens=set(re.findall(r"[\w.-]{2,}",query.lower()))
+    if not query_tokens:
+        return [0.0 for _ in texts]
+    codes={token for token in query_tokens if any(char.isdigit() for char in token)}
+    scores=[]
+    for text in texts:
+        text_tokens=set(re.findall(r"[\w.-]{2,}",text.lower()))
+        overlap=len(query_tokens & text_tokens)/len(query_tokens)
+        code_matches=len(codes & text_tokens)
+        scores.append(min(1.0,overlap+(0.25*code_matches)))
+    return scores
+
+
 def rerank(query: str, texts: list[str]):
     if not texts:
         return []
-    response = requests.post(
-        f"{settings.reranker_url}/rerank",
-        json={"query": query, "texts": texts, "truncate": True},
-        timeout=90,
-    )
-    response.raise_for_status()
-    scores = {int(item["index"]): float(item["score"]) for item in response.json()}
-    return [scores.get(index, 0.0) for index in range(len(texts))]
+    try:
+        response = requests.post(
+            f"{settings.reranker_url}/rerank",
+            json={"query": query, "texts": texts, "truncate": True},
+            timeout=30,
+        )
+        response.raise_for_status()
+        scores = {int(item["index"]): float(item["score"]) for item in response.json()}
+        return [scores.get(index, 0.0) for index in range(len(texts))]
+    except requests.RequestException:
+        return lexical_rerank(query,texts)
 
 
 def interpretation_node(state: SupportState):

@@ -45,3 +45,5 @@ Prompt ma rolę starszego inżyniera wsparcia IT. Najpierw identyfikuje słowa k
 Odpowiedź nie używa stylu prawnego, formalnych przypisów ani numerów materiałów. Ma stałą, techniczną strukturę: `SŁOWA KLUCZOWE`, `PRAWDOPODOBNA PRZYCZYNA`, `ZALECANA PROCEDURA`, `WERYFIKACJA` oraz `UWAGI I ESKALACJA`. Każdy krok procedury powinien zawierać oczekiwany rezultat. Przy słabym dopasowaniu model wskazuje brakujące dane zamiast wymyślać polecenia, ścieżki lub konfigurację.
 
 Po rerankingu wybieranych jest maksymalnie osiem najlepszych trafień. Dla trafienia z dokumentacji orkiestrator bezpiecznie dobiera poprzedni i następny fragment tego samego dokumentu, ponownie egzekwując zgodność programu i widoczność klienta. Prompt zawiera tytuł dokumentu, pełne fragmenty oraz oznaczenie trafienia i kontekstu sąsiedniego. Łączny budżet materiałów przekazywanych do generatora wynosi `24 000` znaków; całe dokumenty nie są wysyłane.
+
+Reranker ma limit oczekiwania 30 sekund. Timeout, błąd HTTP lub chwilowa niedostępność nie przerywa analizy ani konsultacji: orkiestrator przechodzi wtedy na lokalny ranking leksykalny, ze wzmocnieniem dokładnych kodów zawierających cyfry.

@@ -8,6 +8,7 @@ import support.chat as support_chat
 from iodo_rag.chunking import detect_document_type,split_into_chunks
 from iodo_rag.parsers import parse_docx
 from docx import Document
+import requests
 
 def test_ranking_weights(): assert total(1,1,1)==1
 def test_effectiveness_has_prior(): assert effectiveness(1,0,0)<1
@@ -136,3 +137,8 @@ def test_consultation_retrieves_again_for_each_correction(monkeypatch):
     assert "Sprostowanie: błąd występuje przy eksporcie" in seen["query"]
     assert "HISTORIA ROZMOWY" in seen["prompt"] and "Wykonaj krok A" in seen["prompt"]
     assert answer=="Odpowiedź" and provider=="external_api" and not error and len(sources)==1
+
+def test_reranker_timeout_uses_lexical_fallback(monkeypatch):
+    monkeypatch.setattr(support_graph.requests,"post",lambda *args,**kwargs:(_ for _ in ()).throw(requests.Timeout("timeout")))
+    scores=support_graph.rerank("ERR-1234 eksport ASW",["Instrukcja ERR-1234 dla eksportu","Ogólne logowanie"])
+    assert scores[0]>scores[1]
