@@ -9,7 +9,7 @@ from iodo_rag.embeddings import EmbeddingClient
 from iodo_rag.parsers import parse_document
 from iodo_rag.vector import to_pgvector
 from .config import settings
-from .db import audit, connect, create_session, session_user
+from .db import application_settings, audit, connect, create_session, session_user
 from .security import anonymize, hash_password, ip_hash, require_role, token, verify_password
 from .workflow import validate_feedback
 
@@ -52,6 +52,7 @@ def desk_page(content:str,current:dict,active:str)->str:
         cls="active" if active==key else ""
         return f"<a class='{cls}' href='{path}'><span>{icon}</span>{label}</a>"
     extra=(nav("/cases","Baza przypadków","cases","◆")+nav("/knowledge","Dokumentacja","knowledge","▤")) if privileged else ""
+    if current["role"]=="admin": extra+=nav("/settings","Ustawienia","settings","⚙")
     csrf_value=html.escape(current["csrf_token"],quote=True)
     # Existing pages are deliberately kept intact; the shared shell supplies the
     # visual system while their forms and scripts continue to use the real API.
@@ -91,6 +92,19 @@ class ResolutionReportIn(BaseModel):
     comment:str|None=None
 class PublishResolutionIn(BaseModel):
     title:str=Field(min_length=3,max_length=240)
+class AdminUserIn(BaseModel):
+    username:str=Field(min_length=3,max_length=80,pattern=r"^[A-Za-z0-9._-]+$")
+    password:str=Field(min_length=12,max_length=200)
+    role:str=Field(pattern="^(technician|senior_technician|admin)$")
+class AdminClientIn(BaseModel):
+    name:str=Field(min_length=2,max_length=240)
+class AdminSettingsIn(BaseModel):
+    llm_timeout_seconds:int=Field(ge=60,le=3600)
+    llm_response_tokens:int=Field(ge=100,le=1000)
+    retrieval_candidates:int=Field(ge=5,le=20)
+    retrieval_top_sources:int=Field(ge=1,le=8)
+    chunk_target_chars:int=Field(ge=500,le=2000)
+    chunk_overlap_chars:int=Field(ge=0,le=400)
 
 def user(request:Request):
     found=session_user(request.cookies.get("support_session"))
@@ -239,6 +253,35 @@ def cases_page(current=Depends(user)):
     <button type='submit'>Zapisz przypadek</button></form><div id='message'></div></section>
     <script>document.getElementById('case-form').addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());body.program_id=Number(body.program_id);for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok)e.target.reset();}});</script></html>""",current,"cases")
 
+@app.get("/settings",response_class=HTMLResponse)
+def settings_page(current=Depends(user)):
+    require_role(current,"admin")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,username,role,active,created_at,last_login_at FROM support.users ORDER BY username")
+        users=cur.fetchall()
+        cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
+        clients=cur.fetchall()
+        configured=application_settings(cur)
+    user_rows="".join(f"<tr><td>{html.escape(row['username'])}</td><td>{html.escape(str(row['role']))}</td><td>{'Aktywny' if row['active'] else 'Nieaktywny'}</td><td>{row['last_login_at'].strftime('%Y-%m-%d %H:%M') if row['last_login_at'] else '—'}</td></tr>" for row in users)
+    client_rows="".join(f"<tr><td>{row['id']}</td><td>{html.escape(row['name'])}</td></tr>" for row in clients)
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Ustawienia</title>
+    <style>.settings-grid{{display:grid;grid-template-columns:1fr 1fr;gap:18px}}.settings-grid section{{margin:0!important}}.settings-wide{{grid-column:1/-1}}@media(max-width:900px){{.settings-grid{{grid-template-columns:1fr}}.settings-wide{{grid-column:auto}}}}</style>
+    <div class='desk-kicker'>Administracja</div><h1>Ustawienia panelu</h1><p>Użytkownicy, klienci i parametry pracy asystenta. Zmiany są audytowane.</p>
+    <div class='settings-grid'>
+    <section><h2>Dodaj serwisanta</h2><form id='user-form'><label>Login<input name='username' minlength='3' maxlength='80' pattern='[A-Za-z0-9._-]+' required></label><label>Hasło początkowe<input name='password' type='password' minlength='12' required></label><label>Rola<select name='role'><option value='technician'>Serwisant</option><option value='senior_technician'>Starszy serwisant</option><option value='admin'>Administrator</option></select></label><button>Dodaj użytkownika</button></form><div id='user-message'></div></section>
+    <section><h2>Dodaj klienta</h2><form id='client-form'><label>Nazwa klienta<input name='name' minlength='2' maxlength='240' required></label><button>Dodaj klienta</button></form><div id='client-message'></div><h3>Klienci</h3><table><thead><tr><th>ID</th><th>Nazwa</th></tr></thead><tbody>{client_rows}</tbody></table></section>
+    <section class='settings-wide'><h2>Parametry asystenta</h2><p>Nowe wartości obowiązują dla kolejnych analiz i importów. Nie zmieniają sekretów ani adresów usług.</p><form id='settings-form'>
+    <label>Limit czasu odpowiedzi Ollamy (sekundy)<input name='llm_timeout_seconds' type='number' min='60' max='3600' value='{configured["llm_timeout_seconds"]}' required></label>
+    <label>Maksymalna długość odpowiedzi (tokeny)<input name='llm_response_tokens' type='number' min='100' max='1000' value='{configured["llm_response_tokens"]}' required></label>
+    <label>Kandydaci do rerankingu (5–20)<input name='retrieval_candidates' type='number' min='5' max='20' value='{configured["retrieval_candidates"]}' required></label>
+    <label>Źródła przekazywane do odpowiedzi (1–8)<input name='retrieval_top_sources' type='number' min='1' max='8' value='{configured["retrieval_top_sources"]}' required></label>
+    <label>Rozmiar fragmentu dokumentu (znaki)<input name='chunk_target_chars' type='number' min='500' max='2000' value='{configured["chunk_target_chars"]}' required></label>
+    <label>Nakładanie fragmentów (znaki)<input name='chunk_overlap_chars' type='number' min='0' max='400' value='{configured["chunk_overlap_chars"]}' required></label>
+    <button>Zapisz parametry</button></form><div id='settings-message'></div></section>
+    <section class='settings-wide'><h2>Użytkownicy</h2><table><thead><tr><th>Login</th><th>Rola</th><th>Status</th><th>Ostatnie logowanie</th></tr></thead><tbody>{user_rows}</tbody></table></section></div>
+    <script>const csrf='{csrf_value}';async function submitJson(form,url,message,convert=false){{form.onsubmit=async e=>{{e.preventDefault();const body=Object.fromEntries(new FormData(form).entries());if(convert)for(const key of Object.keys(body))body[key]=Number(body[key]);const r=await fetch(url,{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(body)}});document.getElementById(message).textContent=r.ok?'Zapisano. Odświeżam…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),600);}}}}submitJson(document.getElementById('user-form'),'/api/v1/admin/users','user-message');submitJson(document.getElementById('client-form'),'/api/v1/admin/clients','client-message');submitJson(document.getElementById('settings-form'),'/api/v1/admin/settings','settings-message',true);</script></html>""",current,"settings")
+
 @app.post("/api/v1/auth/login")
 def login(body:Login,request:Request,response:Response):
     with connect() as conn, conn.cursor() as cur:
@@ -254,6 +297,41 @@ def logout(request:Request,response:Response,current=Depends(csrf)):
     with connect() as conn, conn.cursor() as cur:
         sid=request.cookies.get("support_session"); audit(cur,current["id"],"logout","session",sid); cur.execute("DELETE FROM support.sessions WHERE id=%s",(sid,))
     response.delete_cookie("support_session")
+
+@app.post("/api/v1/admin/users",status_code=201)
+def admin_create_user(body:AdminUserIn,current=Depends(csrf)):
+    require_role(current,"admin")
+    username=body.username.strip()
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM support.users WHERE lower(username)=lower(%s)",(username,))
+        if cur.fetchone(): raise HTTPException(409,"Użytkownik o takim loginie już istnieje")
+        cur.execute("INSERT INTO support.users(username,password_hash,role) VALUES(%s,%s,%s) RETURNING id,username,role,active",(username,hash_password(body.password),body.role))
+        created=cur.fetchone(); audit(cur,current["id"],"create","user",created["id"],{"username":username,"role":body.role})
+    return created
+
+@app.post("/api/v1/admin/clients",status_code=201)
+def admin_create_client(body:AdminClientIn,current=Depends(csrf)):
+    require_role(current,"admin")
+    name=" ".join(body.name.split())
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM public.clients WHERE lower(name)=lower(%s)",(name,))
+        if cur.fetchone(): raise HTTPException(409,"Klient o takiej nazwie już istnieje")
+        cur.execute("INSERT INTO public.clients(name) VALUES(%s) RETURNING id,name",(name,))
+        created=cur.fetchone(); audit(cur,current["id"],"create","client",created["id"],{"name":name})
+    return created
+
+@app.post("/api/v1/admin/settings")
+def admin_update_settings(body:AdminSettingsIn,current=Depends(csrf)):
+    require_role(current,"admin")
+    if body.chunk_overlap_chars>=body.chunk_target_chars:
+        raise HTTPException(422,"Nakładanie fragmentów musi być mniejsze od rozmiaru fragmentu")
+    values=body.model_dump()
+    with connect() as conn, conn.cursor() as cur:
+        for key,value in values.items():
+            cur.execute("""INSERT INTO support.application_settings(key,value,updated_by) VALUES(%s,%s,%s)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=now()""",(key,value,current["id"]))
+        audit(cur,current["id"],"update","application_settings","global",values)
+    return {"settings":values}
 
 @app.post("/api/v1/tickets",status_code=201)
 def create_ticket(body:TicketCreate,current=Depends(csrf)):
@@ -380,9 +458,10 @@ def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|N
     with target.open("wb") as out: shutil.copyfileobj(file.file,out)
     digest=hashlib.sha256(target.read_bytes()).hexdigest()
     text,_,_=parse_document(target)
-    chunks=split_into_chunks(text,target_chars=1100,overlap_chars=150)
-    vectors=EmbeddingClient(settings.embedding_url,384).embed([str(x["text"]) for x in chunks])
     with connect() as conn, conn.cursor() as cur:
+        runtime=application_settings(cur)
+        chunks=split_into_chunks(text,target_chars=runtime["chunk_target_chars"],overlap_chars=runtime["chunk_overlap_chars"])
+        vectors=EmbeddingClient(settings.embedding_url,384).embed([str(x["text"]) for x in chunks])
         cur.execute("INSERT INTO support.knowledge_documents(program_id,client_id,scope,source_file,title,sha256,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",(program_id,client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"])); doc=cur.fetchone()["id"]; audit(cur,current["id"],"knowledge_upload","knowledge_document",doc)
         for index,(chunk,vector) in enumerate(zip(chunks,vectors)):
             cur.execute("INSERT INTO support.knowledge_chunks(document_id,chunk_index,chunk_text,metadata,embedding) VALUES(%s,%s,%s,%s::jsonb,%s::vector)",(doc,index,chunk["text"],json.dumps(chunk.get("metadata",{})),to_pgvector(vector)))

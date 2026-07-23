@@ -17,3 +17,10 @@ Stanowisko pracy zgłoszenia:
 - `POST /api/v1/tickets/{id}/publish-resolution` — publikacja metody przez seniora/admina jako zatwierdzone rozwiązanie i przypadek historyczny.
 
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.
+
+Administracja (wyłącznie `admin`):
+
+- `GET /settings` — panel użytkowników, klientów i parametrów;
+- `POST /api/v1/admin/users` — utworzenie konta i przypisanie roli;
+- `POST /api/v1/admin/clients` — dodanie klienta do wspólnego katalogu;
+- `POST /api/v1/admin/settings` — zapis kontrolowanych parametrów analizy i importu.
