@@ -13,6 +13,7 @@ class Settings:
     external_llm_model: str = os.getenv("EXTERNAL_LLM_MODEL", "")
     external_llm_api_key: str = os.getenv("EXTERNAL_LLM_API_KEY", "")
     external_llm_timeout_seconds: int = int(os.getenv("EXTERNAL_LLM_TIMEOUT_SECONDS", "90"))
+    external_llm_reasoning_effort: str = os.getenv("EXTERNAL_LLM_REASONING_EFFORT", "none")
     session_secret: str = os.getenv("SUPPORT_SESSION_SECRET", "development-only-change-me")
     checkpoint_key: str = os.getenv("SUPPORT_CHECKPOINT_KEY", "")
     upload_root: str = os.getenv("SUPPORT_UPLOAD_ROOT", "/data/support-uploads")

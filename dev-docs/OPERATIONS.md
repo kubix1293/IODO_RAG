@@ -14,4 +14,6 @@ Timeout połączenia workera z Ollamą jest sterowany przez `LLM_TIMEOUT_SECONDS
 
 Zewnętrzny generator konfiguruje się wyłącznie przez sekrety środowiskowe `EXTERNAL_LLM_URL`, `EXTERNAL_LLM_MODEL`, `EXTERNAL_LLM_API_KEY` i `EXTERNAL_LLM_TIMEOUT_SECONDS`. URL ma wskazywać endpoint zgodny z OpenAI Chat Completions. Bez kompletu tych wartości albo po błędzie API worker automatycznie użyje Ollamy. Przełącznik biznesowy znajduje się w `/settings`.
 
+Aktualne wdrożenie używa OVH AI Endpoint `Qwen3.5-9B` przez `/v1/chat/completions`. `EXTERNAL_LLM_REASONING_EFFORT=none` jest wymagane, ponieważ domyślne rozumowanie modelu może zużyć cały limit na niewidoczne pole `reasoning`. Klucz pozostaje wyłącznie w nieśledzonym `.env`. Neutralny test połączenia trwał 0,56 s, a pełny StateGraph z ośmioma źródłami 19,99 s.
+
 Backup musi obejmować bazę PostgreSQL i `/data/support-uploads`. Odtworzenie należy ćwiczyć przed pilotem. Worker jest bezstanowy i może mieć wiele replik.

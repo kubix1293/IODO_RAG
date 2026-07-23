@@ -36,4 +36,6 @@ Kolejka `support.support_jobs` nadal odpowiada za przejęcie zadania przez worke
 
 Węzeł `answer_generation` najpierw wywołuje skonfigurowane API zgodne z OpenAI Chat Completions. Timeout, błąd HTTP, brak konfiguracji albo pusta odpowiedź automatycznie kierują prompt do lokalnej Ollamy. Administrator może wyłączyć API w `/settings`; wtedy Ollama jest używana bez próby zewnętrznej.
 
+Pierwszym dostawcą wdrożenia jest OVH AI Endpoint z modelem `Qwen3.5-9B`. Tryb reasoning jest wyłączony, aby limit odpowiedzi był przeznaczony na treść procedury serwisowej.
+
 Do grafu trafia już zanonimizowany opis. Prompt zawiera pseudonim klienta `K-…` wyprowadzony przez HMAC z wewnętrznego ID, ale nie nazwę klienta. Stan zapisuje `llm_provider`, błąd fallbacku oraz kategorie wykonanych redakcji.

@@ -183,15 +183,18 @@ def reranking_node(state: SupportState):
 def external_llm_answer(prompt:str,runtime:dict)->str:
     if not settings.external_llm_url or not settings.external_llm_model or not settings.external_llm_api_key:
         raise RuntimeError("Zewnętrzne API LLM nie jest skonfigurowane")
+    payload={"model":settings.external_llm_model,"messages":[{"role":"user","content":prompt}],
+             "temperature":0.1,"max_tokens":runtime["llm_response_tokens"]}
+    if settings.external_llm_reasoning_effort:
+        payload["reasoning_effort"]=settings.external_llm_reasoning_effort
     response=requests.post(
         settings.external_llm_url,
         headers={"Authorization":f"Bearer {settings.external_llm_api_key}","Content-Type":"application/json"},
-        json={"model":settings.external_llm_model,"messages":[{"role":"user","content":prompt}],
-              "temperature":0.1,"max_tokens":runtime["llm_response_tokens"]},
+        json=payload,
         timeout=settings.external_llm_timeout_seconds,
     )
     response.raise_for_status()
-    answer=response.json()["choices"][0]["message"]["content"].strip()
+    answer=(response.json()["choices"][0]["message"].get("content") or "").strip()
     if not answer: raise RuntimeError("Zewnętrzne API zwróciło pustą odpowiedź")
     return answer
 
