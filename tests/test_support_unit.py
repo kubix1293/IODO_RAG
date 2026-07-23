@@ -4,6 +4,7 @@ from support.workflow import interpret_locally,validate_feedback
 from support.worker import enrich_description,json_safe
 import support.graph as support_graph
 import support.learning as support_learning
+import support.chat as support_chat
 from iodo_rag.chunking import detect_document_type,split_into_chunks
 from iodo_rag.parsers import parse_docx
 from docx import Document
@@ -118,3 +119,20 @@ def test_state_graph_runs_both_db_agents(monkeypatch):
     result=graph.invoke({"ticket_id":"test","client_id":1,"program_id":1,"description":"ERR-1234 wersja 1.2.3","answers":{},"history_candidates":[],"documentation_candidates":[]})
     assert {row["kind"] for row in result["sources"]}=={"historical_case","documentation"}
     assert result["proposed_answer"]=="gotowe"
+
+def test_consultation_retrieves_again_for_each_correction(monkeypatch):
+    seen={}
+    def history(state):
+        seen["query"]=state["effective_description"]
+        return {"history_candidates":[]}
+    monkeypatch.setattr(support_chat,"history_agent_node",history)
+    monkeypatch.setattr(support_chat,"documentation_agent_node",lambda state:{"documentation_candidates":[]})
+    monkeypatch.setattr(support_chat,"reranking_node",lambda state:{"sources":[{"kind":"documentation","title":"Instrukcja","chunk_text":"Wykonaj krok A"}]})
+    monkeypatch.setattr(support_chat,"application_settings",lambda:{})
+    monkeypatch.setattr(support_chat,"hybrid_llm_answer",lambda prompt,runtime:(seen.setdefault("prompt",prompt) and "Odpowiedź","external_api",""))
+    answer,provider,error,sources=support_chat.answer_consultation(
+        question="Sprostowanie: błąd występuje przy eksporcie",conversation=[{"role":"user","content":"Problem przy zapisie"}],
+        ticket_description="ERR-1234 w ASW",program_id=2,client_id=7,client_ref="K-test")
+    assert "Sprostowanie: błąd występuje przy eksporcie" in seen["query"]
+    assert "HISTORIA ROZMOWY" in seen["prompt"] and "Wykonaj krok A" in seen["prompt"]
+    assert answer=="Odpowiedź" and provider=="external_api" and not error and len(sources)==1

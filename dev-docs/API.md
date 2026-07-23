@@ -18,6 +18,14 @@ Stanowisko pracy zgłoszenia:
 
 Kurator może wskazać istniejące `problem_id` i `solution_id`, ale serwer akceptuje wyłącznie ID wcześniej przekazane modelowi jako kandydaci tego systemu i zakresu.
 
+Konsultacje:
+
+- `GET /assistant` — panel trwałych rozmów serwisanta;
+- `POST /api/v1/consultations` — tworzy rozmowę dla pełnego/skróconego numeru ticketu albo wskazanego `program_id` i opcjonalnego `client_id`;
+- `POST /api/v1/consultations/{id}/messages` — zapisuje pytanie, ponownie wykonuje retrieval i reranking, wywołuje hybrydowy LLM oraz zapisuje odpowiedź wraz ze źródłami.
+
+Serwisant ma dostęp wyłącznie do utworzonych przez siebie rozmów. Kontekst ticketu ustala system i klienta po stronie serwera, więc nie można ich podmienić w żądaniu wiadomości.
+
 Po logowaniu klient otrzymuje cookie HttpOnly i `csrf_token`. Każde modyfikujące żądanie poza loginem wymaga nagłówka `X-CSRF-Token`. Błędy walidacji to 422, brak sesji 401, brak roli 403, konflikt stanu 409.
 
 Administracja (wyłącznie `admin`):

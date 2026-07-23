@@ -31,6 +31,14 @@ Przycisk **Uruchom / ponów analizę modelu** tworzy trwałe zadanie. Ekran odś
 
 Podczas `queued` i `running` panel pokazuje animowany komunikat o wyszukiwaniu źródeł i przygotowaniu odpowiedzi. Jeżeli workflow przejdzie do `needs_information`, ekran wyświetla brakujące pola. Wpisz wartości (albo jawnie „brak”/„nieznana”) i wybierz **Uzupełnij i wznów analizę**. Dane zostaną dołączone do opisu używanego przez retrieval i model.
 
+## Konsultacja AI
+
+Pozycja **Konsultacja AI** (`/assistant`) jest dostępna dla każdego zalogowanego serwisanta. Rozmowę można rozpocząć, podając pełny albo widoczny w panelu skrócony numer ticketu. System automatycznie dobierze klienta, system i opis zgłoszenia. Bez ticketu należy wybrać system oraz opcjonalnie klienta; ten tryb służy do pytań ogólnych i wykonywania czynności na podstawie instrukcji.
+
+Każda kolejna wiadomość lub sprostowanie ponownie uruchamia wyszukiwanie przypadków historycznych, dokumentacji wektorowej i reranking. Model otrzymuje opis ticketu, osiem ostatnich wiadomości oraz aktualnie najlepiej dopasowane materiały. Rozmowy są trwałe i widoczne na liście **Moje konsultacje**.
+
+Konsultacje zachowują izolację ZZL/ASW. Dla ticketu prywatne materiały są ograniczone do jego klienta; rozmowa ogólna bez klienta używa wyłącznie wiedzy globalnej. Przed przekazaniem do modelu ticket, wiadomości i historia są anonimizowane.
+
 ## Jak powstaje podpowiedź
 
 Worker wykonuje:

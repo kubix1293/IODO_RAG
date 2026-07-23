@@ -13,6 +13,7 @@ from .db import application_settings, audit, connect, create_session, session_us
 from .security import anonymize, client_reference, hash_password, ip_hash, require_role, token, verify_password
 from .workflow import validate_feedback
 from .learning import curate_knowledge
+from .chat import answer_consultation
 
 app=FastAPI(title="IODO Support",version="1.0.0")
 
@@ -62,7 +63,7 @@ def desk_page(content:str,current:dict,active:str)->str:
         content=f"<style>{DESK_STYLE}</style>"+content
     marker="</style>"
     sidebar=f"""<aside class='desk-sidebar'><div class='desk-logo'>SERWIS<span>DESK</span></div><nav class='desk-nav'>
-    {nav('/tickets','Zgłoszenia','tickets','▦')}{nav('/tickets/new','Nowe zgłoszenie','new','＋')}{extra}</nav>
+    {nav('/tickets','Zgłoszenia','tickets','▦')}{nav('/tickets/new','Nowe zgłoszenie','new','＋')}{nav('/assistant','Konsultacja AI','assistant','✦')}{extra}</nav>
     <div class='desk-foot'><div class='desk-ready'><span class='desk-dot'></span>Asystent AI gotowy</div>
     <div class='desk-user'>{html.escape(current['username'])}</div><div class='desk-role'>{role_labels.get(current['role'],current['role'])}</div>
     <button class='desk-logout' id='desk-logout'>Wyloguj</button></div></aside><main class='desk-main'><div class='desk-content'>"""
@@ -95,6 +96,13 @@ class ResolutionReportIn(BaseModel):
 class PublishResolutionIn(BaseModel):
     title:str=Field(min_length=3,max_length=240)
     scope:str=Field(pattern="^(global|client)$")
+class ConsultationCreateIn(BaseModel):
+    ticket_id:str|None=Field(default=None,min_length=8,max_length=36)
+    program_id:int|None=None
+    client_id:int|None=None
+    title:str|None=Field(default=None,max_length=240)
+class ConsultationMessageIn(BaseModel):
+    content:str=Field(min_length=2,max_length=8000)
 class AdminUserIn(BaseModel):
     username:str=Field(min_length=3,max_length=80,pattern=r"^[A-Za-z0-9._-]+$")
     password:str=Field(min_length=12,max_length=200)
@@ -155,6 +163,57 @@ def tickets_page(current=Depends(user)):
         tickets=cur.fetchall()
     rows="".join(f"<tr><td><a href='/tickets/{row['id']}/view'>{str(row['id'])[:8]}</a></td><td>{html.escape(row['client_name'])}</td><td>{html.escape(row['program_name'])}</td><td>{html.escape(str(row['status']))}</td><td>{html.escape(row['description'][:120])}</td><td>{row['created_at'].strftime('%Y-%m-%d %H:%M')}</td></tr>" for row in tickets)
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenia</title><style>body{{font:16px system-ui;max-width:1200px;margin:2rem auto;padding:0 1rem}}table{{border-collapse:collapse;width:100%}}th,td{{padding:.6rem;border-bottom:1px solid #ddd;text-align:left}}</style><div class='desk-kicker'>Centrum zgłoszeń</div><h1>Zgłoszenia serwisowe</h1><p>Obsługa zgłoszeń dla systemów ZZL i ASW. <a href='/tickets/new'>+ Nowe zgłoszenie</a></p><table><thead><tr><th>ID</th><th>Klient</th><th>System</th><th>Status</th><th>Opis</th><th>Utworzono</th></tr></thead><tbody>{rows}</tbody></table></html>""",current,"tickets")
+
+@app.get("/assistant",response_class=HTMLResponse)
+def assistant_page(chat_id:uuid.UUID|None=None,current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id,name FROM support.programs WHERE active AND name NOT LIKE 'Smoke %' ORDER BY name")
+        programs=cur.fetchall()
+        cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
+        clients=cur.fetchall()
+        cur.execute("""SELECT c.id,c.title,c.ticket_id,p.name program_name,c.updated_at
+          FROM support.consultation_chats c JOIN support.programs p ON p.id=c.program_id
+          WHERE c.created_by=%s ORDER BY c.updated_at DESC LIMIT 30""",(current["id"],))
+        chats=cur.fetchall()
+        active=None; messages=[]
+        if chat_id:
+            cur.execute("""SELECT c.*,p.name program_name,cl.name client_name
+              FROM support.consultation_chats c JOIN support.programs p ON p.id=c.program_id
+              LEFT JOIN public.clients cl ON cl.id=c.client_id
+              WHERE c.id=%s AND c.created_by=%s""",(chat_id,current["id"]))
+            active=cur.fetchone()
+            if not active: raise HTTPException(404,"Nie znaleziono konsultacji")
+            cur.execute("SELECT role,content,sources,provider,created_at FROM support.consultation_messages WHERE chat_id=%s ORDER BY id",(chat_id,))
+            messages=cur.fetchall()
+    program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
+    client_options="<option value=''>Tylko wiedza globalna</option>"+"".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
+    chat_links="".join(f"<li><a href='/assistant?chat_id={row['id']}'>{html.escape(row['title'])}</a><small>{html.escape(row['program_name'])}</small></li>" for row in chats) or "<li>Brak wcześniejszych konsultacji.</li>"
+    bubbles=[]
+    for message in messages:
+        source_count=len(message["sources"] or [])
+        meta=f"<small>{'Źródła: '+str(source_count) if message['role']=='assistant' else ''}</small>"
+        bubbles.append(f"<div class='chat-message {message['role']}'><strong>{'Asystent' if message['role']=='assistant' else 'Ty'}</strong><pre>{html.escape(message['content'])}</pre>{meta}</div>")
+    active_html=""
+    if active:
+        active_html=f"""<section class='chat-window'><h2>{html.escape(active['title'])}</h2>
+        <p>{html.escape(active['program_name'])} · {html.escape(active.get('client_name') or 'wiedza globalna')}
+        {' · ticket '+str(active['ticket_id']) if active['ticket_id'] else ''}</p>
+        <div id='messages'>{''.join(bubbles) or '<p>Zadaj pierwsze pytanie.</p>'}</div>
+        <form id='message-form'><label>Wiadomość lub sprostowanie<textarea name='content' minlength='2' required placeholder='Doprecyzuj objawy albo poproś o procedurę na podstawie instrukcji…'></textarea></label>
+        <button>Wyślij i wyszukaj ponownie</button></form><div id='chat-status'></div></section>"""
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Konsultacja AI</title>
+    <style>.chat-layout{{display:grid;grid-template-columns:280px 1fr;gap:18px}}.chat-list ul{{padding:0;list-style:none}}.chat-list li{{padding:10px 0;border-bottom:1px solid var(--line)}}.chat-list small{{display:block;color:var(--muted)}}.chat-message{{max-width:88%;margin:12px 0;padding:14px;border-radius:12px;background:#f1f3f2}}.chat-message.user{{margin-left:auto;background:#eaf0ff}}.chat-message pre{{background:transparent;padding:0;margin:8px 0}}@media(max-width:900px){{.chat-layout{{grid-template-columns:1fr}}}}</style>
+    <div class='desk-kicker'>Asystent serwisowy</div><h1>Konsultacja AI</h1><p>Rozmawiaj o konkretnym tickecie albo poproś o pomoc na podstawie dokumentacji wybranego systemu.</p>
+    <section><h2>Nowa konsultacja</h2><form id='new-chat-form'>
+    <label>Numer ticketu — opcjonalnie<input name='ticket_id' placeholder='pełny UUID zgłoszenia'></label>
+    <p>Jeżeli nie podajesz ticketu, wybierz system i opcjonalnie klienta.</p>
+    <label>System<select name='program_id'><option value=''>Wybierz system</option>{program_options}</select></label>
+    <label>Klient<select name='client_id'>{client_options}</select></label>
+    <label>Tytuł rozmowy<input name='title' maxlength='240' placeholder='np. Aktualizacja certyfikatu'></label>
+    <button>Rozpocznij konsultację</button></form><div id='new-chat-status'></div></section>
+    <div class='chat-layout'><section class='chat-list'><h2>Moje konsultacje</h2><ul>{chat_links}</ul></section>{active_html or "<section><p>Utwórz nową konsultację lub wybierz wcześniejszą rozmowę.</p></section>"}</div>
+    <script>const csrf='{csrf_value}';document.getElementById('new-chat-form').onsubmit=async e=>{{e.preventDefault();const raw=Object.fromEntries(new FormData(e.target).entries());const body={{ticket_id:raw.ticket_id||null,program_id:raw.program_id?Number(raw.program_id):null,client_id:raw.client_id?Number(raw.client_id):null,title:raw.title||null}};const r=await fetch('/api/v1/consultations',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(body)}});if(r.ok){{const data=await r.json();location='/assistant?chat_id='+data.id}}else document.getElementById('new-chat-status').textContent='Błąd: '+await r.text();}};const mf=document.getElementById('message-form');if(mf)mf.onsubmit=async e=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('chat-status').innerHTML='<span class="spinner"></span> Asystent ponownie wyszukuje materiały i przygotowuje odpowiedź…';const body=Object.fromEntries(new FormData(e.target).entries());const r=await fetch('/api/v1/consultations/{chat_id}/messages',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(body)}});if(r.ok)location.reload();else{{document.getElementById('chat-status').textContent='Błąd: '+await r.text();button.disabled=false;}}}};</script></html>""",current,"assistant")
 
 @app.get("/knowledge/review",response_class=HTMLResponse)
 def knowledge_review_page(current=Depends(user)):
@@ -376,6 +435,67 @@ def admin_update_settings(body:AdminSettingsIn,current=Depends(csrf)):
               ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=now()""",(key,value,current["id"]))
         audit(cur,current["id"],"update","application_settings","global",values)
     return {"settings":values}
+
+@app.post("/api/v1/consultations",status_code=201)
+def create_consultation(body:ConsultationCreateIn,current=Depends(csrf)):
+    chat_id=uuid.uuid4()
+    with connect() as conn, conn.cursor() as cur:
+        ticket=None
+        if body.ticket_id:
+            ticket_number=body.ticket_id.strip().lower()
+            cur.execute("""SELECT id,program_id,client_id,description FROM support.tickets
+              WHERE id::text=%s OR id::text LIKE %s ORDER BY created_at DESC LIMIT 2""",
+              (ticket_number,ticket_number+"%"))
+            matches=cur.fetchall()
+            if len(matches)>1: raise HTTPException(409,"Skrócony numer pasuje do więcej niż jednego ticketu")
+            ticket=matches[0] if matches else None
+            if not ticket: raise HTTPException(404,"Nie znaleziono ticketu")
+            program_id=ticket["program_id"]; client_id=ticket["client_id"]
+        else:
+            if not body.program_id: raise HTTPException(422,"Wybierz system albo podaj numer ticketu")
+            cur.execute("SELECT id FROM support.programs WHERE id=%s AND active",(body.program_id,))
+            if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono aktywnego systemu")
+            program_id=body.program_id; client_id=body.client_id
+            if client_id:
+                cur.execute("SELECT 1 FROM public.clients WHERE id=%s",(client_id,))
+                if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono klienta")
+        resolved_ticket_id=ticket["id"] if ticket else None
+        title=(body.title or (f"Ticket {str(resolved_ticket_id)[:8]}" if resolved_ticket_id else "Konsultacja techniczna")).strip()
+        if len(title)<3: raise HTTPException(422,"Tytuł musi mieć co najmniej 3 znaki")
+        cur.execute("""INSERT INTO support.consultation_chats(id,created_by,ticket_id,program_id,client_id,title)
+          VALUES(%s,%s,%s,%s,%s,%s) RETURNING id,title,ticket_id,program_id,client_id""",
+          (chat_id,current["id"],resolved_ticket_id,program_id,client_id,title))
+        created=cur.fetchone(); audit(cur,current["id"],"create","consultation",chat_id,{"ticket_id":str(resolved_ticket_id) if resolved_ticket_id else None,"program_id":program_id})
+    return created
+
+@app.post("/api/v1/consultations/{chat_id}/messages",status_code=201)
+def consultation_message(chat_id:uuid.UUID,body:ConsultationMessageIn,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT c.*,t.description ticket_description
+          FROM support.consultation_chats c LEFT JOIN support.tickets t ON t.id=c.ticket_id
+          WHERE c.id=%s AND c.created_by=%s""",(chat_id,current["id"]))
+        chat=cur.fetchone()
+        if not chat: raise HTTPException(404,"Nie znaleziono konsultacji")
+        cur.execute("SELECT role,content FROM support.consultation_messages WHERE chat_id=%s ORDER BY id DESC LIMIT 8",(chat_id,))
+        conversation=list(reversed(cur.fetchall()))
+    client_ref=client_reference(chat["client_id"],settings.session_secret) if chat["client_id"] else "WIEDZA-GLOBALNA"
+    try:
+        answer,provider,provider_error,sources=answer_consultation(
+            question=body.content,conversation=conversation,ticket_description=chat["ticket_description"],
+            program_id=chat["program_id"],client_id=chat["client_id"],client_ref=client_ref,
+        )
+    except Exception as exc:
+        raise HTTPException(503,f"Asystent chwilowo niedostępny: {str(exc)[:240]}")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM support.consultation_chats WHERE id=%s AND created_by=%s FOR UPDATE",(chat_id,current["id"]))
+        if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono konsultacji")
+        cur.execute("INSERT INTO support.consultation_messages(chat_id,role,content) VALUES(%s,'user',%s)",(chat_id,body.content))
+        cur.execute("""INSERT INTO support.consultation_messages(chat_id,role,content,sources,provider,provider_error)
+          VALUES(%s,'assistant',%s,%s::jsonb,%s,%s)""",
+          (chat_id,answer,json.dumps(sources),provider,provider_error or None))
+        cur.execute("UPDATE support.consultation_chats SET updated_at=now() WHERE id=%s",(chat_id,))
+        audit(cur,current["id"],"message","consultation",chat_id,{"provider":provider,"sources":len(sources)})
+    return {"answer":answer,"provider":provider,"sources":sources}
 
 @app.post("/api/v1/tickets",status_code=201)
 def create_ticket(body:TicketCreate,current=Depends(csrf)):
