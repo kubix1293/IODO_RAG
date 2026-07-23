@@ -39,3 +39,7 @@ Węzeł `answer_generation` najpierw wywołuje skonfigurowane API zgodne z OpenA
 Pierwszym dostawcą wdrożenia jest OVH AI Endpoint z modelem `Qwen3.5-9B`. Tryb reasoning jest wyłączony, aby limit odpowiedzi był przeznaczony na treść procedury serwisowej.
 
 Do grafu trafia już zanonimizowany opis. Prompt zawiera pseudonim klienta `K-…` wyprowadzony przez HMAC z wewnętrznego ID, ale nie nazwę klienta. Stan zapisuje `llm_provider`, błąd fallbacku oraz kategorie wykonanych redakcji.
+
+Prompt ma rolę starszego inżyniera wsparcia IT. Najpierw identyfikuje słowa kluczowe zgłoszenia (system, moduł, usługa, operacja, kod błędu, wersja i objaw), a następnie porównuje je z materiałami technicznymi. Dokładny kod błędu, komponent, wersja i wykonywana operacja mają pierwszeństwo przed podobieństwem ogólnych sformułowań.
+
+Odpowiedź nie używa stylu prawnego, formalnych przypisów ani numerów materiałów. Ma stałą, techniczną strukturę: `SŁOWA KLUCZOWE`, `PRAWDOPODOBNA PRZYCZYNA`, `ZALECANA PROCEDURA`, `WERYFIKACJA` oraz `UWAGI I ESKALACJA`. Każdy krok procedury powinien zawierać oczekiwany rezultat. Przy słabym dopasowaniu model wskazuje brakujące dane zamiast wymyślać polecenia, ścieżki lub konfigurację.

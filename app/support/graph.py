@@ -222,21 +222,53 @@ def hybrid_llm_answer(prompt:str,runtime:dict)->tuple[str,str,str]:
     return answer,provider,external_error
 
 
-def answer_node(state: SupportState):
+def build_technical_support_prompt(state:SupportState)->str:
     sources = state.get("sources") or []
     context = "\n\n".join(
-        f"[{index + 1}] {row.get('kind')} / źródło {row.get('id')}\n{row['chunk_text'][:1400]}"
+        f"MATERIAŁ {index + 1} ({row.get('kind')}):\n{row['chunk_text'][:1400]}"
         for index, row in enumerate(sources)
     )
-    prompt = f"""Jesteś asystentem serwisowym. Na podstawie wyłącznie źródeł zaproponuj bezpieczną diagnozę i czynności. Nie twierdź, że czynność wykonano. Jeśli źródła są niewystarczające, napisz czego brakuje. Odpowiedz po polsku, numerując kroki i wskazując numery źródeł. Referencja klienta jest pseudonimem i służy wyłącznie do zachowania kontekstu powtarzalności.
+    return f"""Jesteś starszym inżynierem wsparcia technicznego IT. Przygotuj praktyczną podpowiedź dla serwisanta rozwiązującego zgłoszenie dotyczące aplikacji lub infrastruktury.
+
+Zasady analizy:
+1. Najpierw wyodrębnij najważniejsze słowa kluczowe ze zgłoszenia: nazwy systemu, modułu, usługi, procesu, operacji, komunikaty i kody błędów, wersję oraz objaw.
+2. Porównaj je z materiałami technicznymi. Najwyżej traktuj zgodność dokładnego kodu błędu, komponentu, wersji i wykonywanej operacji. Pomiń materiały dotyczące innego problemu, nawet jeśli zawierają podobne ogólne słowa.
+3. Nie twórz stylu prawnego, formalnych cytowań, przypisów ani omówienia dokumentów. Nie wypisuj numerów materiałów w odpowiedzi.
+4. Nie wymyślaj nazw opcji, ścieżek, poleceń ani wartości konfiguracji, których nie ma w zgłoszeniu lub materiałach.
+5. Nie twierdź, że czynność została wykonana. To ma być instrukcja dla serwisanta.
+6. Jeśli dopasowanie jest słabe, jasno napisz, jakich danych technicznych brakuje, zamiast zgadywać.
+
+Wymagany format odpowiedzi:
+SŁOWA KLUCZOWE
+- krótka lista najważniejszych terminów
+
+PRAWDOPODOBNA PRZYCZYNA
+- konkretna diagnoza i poziom pewności: wysoki, średni albo niski
+
+ZALECANA PROCEDURA
+1. Konkretna czynność techniczna.
+2. Kolejna czynność techniczna.
+Przy każdym kroku podaj oczekiwany rezultat lub informację, co należy sprawdzić.
+
+WERYFIKACJA
+- jak potwierdzić usunięcie problemu
+
+UWAGI I ESKALACJA
+- ryzyko, warunek przerwania albo dane potrzebne do dalszej diagnozy
+
+Odpowiadaj po polsku, technicznie, zwięźle i operacyjnie.
 
 REFERENCJA KLIENTA: {state["client_ref"]}
 
 ZGŁOSZENIE:
 {state["effective_description"]}
 
-ŹRÓDŁA:
-{context or "Brak trafnych źródeł."}"""
+MATERIAŁY TECHNICZNE:
+{context or "Brak trafnych materiałów technicznych."}"""
+
+
+def answer_node(state: SupportState):
+    prompt=build_technical_support_prompt(state)
     with connect() as conn, conn.cursor() as cur:
         runtime = application_settings(cur)
     answer,provider,external_error=hybrid_llm_answer(prompt,runtime)

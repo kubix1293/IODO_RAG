@@ -39,7 +39,9 @@ Worker wykonuje:
 2. wyszukiwanie dokumentacji właściwego systemu i klienta;
 3. dołączenie zatwierdzonych przypadków historycznych tego samego systemu;
 4. reranking maksymalnie 20 kandydatów i wybór ośmiu źródeł;
-5. wygenerowanie przez Ollamę diagnozy i numerowanych kroków wyłącznie na podstawie źródeł.
+5. wygenerowanie przez zewnętrzny model lub lokalną Ollamę technicznej diagnozy i instrukcji wyłącznie na podstawie trafnych materiałów.
+
+Model wyodrębnia ze zgłoszenia system, moduł, usługę, operację, kod błędu, wersję i objaw. Odpowiedź ma sekcje: **Słowa kluczowe**, **Prawdopodobna przyczyna**, **Zalecana procedura**, **Weryfikacja** oraz **Uwagi i eskalacja**. Procedura zawiera konkretne kroki i oczekiwane wyniki. Panel nie prezentuje odpowiedzi w stylu dokumentu prawnego ani formalnych cytowań źródeł. Jeśli wiedza jest niewystarczająca, podpowiedź wskazuje dane potrzebne do dalszej diagnozy.
 
 Model jedynie doradza i nie wykonuje czynności w systemach klienta.
 

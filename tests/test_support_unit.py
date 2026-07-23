@@ -61,6 +61,13 @@ def test_docx_parser_preserves_heading_style(tmp_path):
     document.save(path)
     text,_=parse_docx(path)
     assert "# Procedura aktualizacji" in text
+def test_support_prompt_is_technical_not_legal():
+    prompt=support_graph.build_technical_support_prompt({
+        "client_ref":"K-test","effective_description":"ERR-1234 podczas zapisu w module ASW",
+        "sources":[{"kind":"documentation","id":"1","chunk_text":"Sprawdź usługę ZSIMED i jej log."}],
+    })
+    assert "SŁOWA KLUCZOWE" in prompt and "ZALECANA PROCEDURA" in prompt and "WERYFIKACJA" in prompt
+    assert "Nie twórz stylu prawnego" in prompt and "Nie wypisuj numerów materiałów" in prompt
 def test_feedback_validation():
     assert validate_feedback("not_helped","")[0]=="incomplete"
     assert validate_feedback("helped","nadal nie pomogło")[0]=="suspicious"
