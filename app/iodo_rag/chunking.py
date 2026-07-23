@@ -19,6 +19,13 @@ POINT_RE = re.compile(
 )
 MD_HEADER_RE = re.compile(r"(?m)^(?P<hashes>#{1,6})\s+(?P<title>.+)")
 PAGE_RE = re.compile(r"\[PAGE (?P<page>\d+)\]")
+PROCEDURE_MARKER_RE = re.compile(
+    r"(?im)^\s*(?:krok\s*\d+|(?:\d+|[a-z])[\.\)]|[-•])\s+"
+)
+INSTRUCTION_HINT_RE = re.compile(
+    r"(?i)\b(?:instrukcj\w*|procedur\w*|konfiguracj\w*|instalacj\w*|"
+    r"aktualizacj\w*|ostrzeżeni\w*|uwag\w*|wymagani\w*|rezultat\w*)\b"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +53,9 @@ def detect_document_type(text: str) -> str:
     """Rozpoznaje typ dokumentu, żeby dobrać strategię podziału."""
     if ARTICLE_RE.search(text) or SECTION_RE.search(text):
         return "legal"
+    markers = len(PROCEDURE_MARKER_RE.findall(text))
+    if markers >= 2 or (markers >= 1 and INSTRUCTION_HINT_RE.search(text)):
+        return "instruction"
     if MD_HEADER_RE.search(text):
         return "markdown"
     return "prose"
@@ -228,6 +238,45 @@ def _split_prose_blocks(text: str, target_chars: int) -> list[Block]:
 
 
 # ---------------------------------------------------------------------------
+# 4) Instrukcje techniczne: procedura -> kompletne kroki
+# ---------------------------------------------------------------------------
+
+def _instruction_heading(paragraph: str) -> str | None:
+    value = paragraph.strip()
+    markdown = MD_HEADER_RE.match(value)
+    if markdown:
+        return markdown.group("title").strip()
+    first_line = value.splitlines()[0].strip()
+    if len(first_line) > 140:
+        return None
+    if re.match(
+        r"(?i)^(?:instrukcj\w*|procedur\w*|konfiguracj\w*|instalacj\w*|"
+        r"aktualizacj\w*|rozdział\b|czynność\b)",
+        first_line,
+    ):
+        return first_line.rstrip(":")
+    letters = [char for char in first_line if char.isalpha()]
+    if len(letters) >= 5 and first_line == first_line.upper():
+        return first_line.rstrip(":")
+    return None
+
+
+def _split_instruction_blocks(text: str, target_chars: int) -> list[Block]:
+    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    blocks: list[Block] = []
+    heading: str | None = None
+    for paragraph in paragraphs:
+        detected = _instruction_heading(paragraph)
+        if detected:
+            heading = detected
+        for piece in _recursive_split(paragraph, target_chars):
+            if heading and heading.lower() not in piece[: max(160, len(heading))].lower():
+                piece = f"Procedura: {heading}\n{piece}"
+            blocks.append(Block(text=piece, heading_path=[heading] if heading else []))
+    return blocks
+
+
+# ---------------------------------------------------------------------------
 # Publiczne API
 # ---------------------------------------------------------------------------
 
@@ -242,6 +291,8 @@ def split_into_chunks(
         for b in blocks:
             expanded.extend(_split_paragraph_level(b, target_chars))
         blocks = expanded
+    elif doc_type == "instruction":
+        blocks = _split_instruction_blocks(text, target_chars)
     elif doc_type == "markdown":
         blocks = _split_markdown_blocks(text)
         # jeśli sekcja pod nagłówkiem i tak jest za duża, doetnij rekurencyjnie
@@ -251,6 +302,9 @@ def split_into_chunks(
                 expanded.append(b)
             else:
                 for piece in _recursive_split(b.text, target_chars):
+                    prefix = " > ".join(b.heading_path)
+                    if prefix and prefix.lower() not in piece[: max(160, len(prefix))].lower():
+                        piece = f"Procedura: {prefix}\n{piece}"
                     expanded.append(Block(text=piece, heading_path=b.heading_path))
         blocks = expanded
     else:
@@ -287,6 +341,12 @@ def _merge_blocks_into_chunks(
 
     for block in blocks:
         block_len = len(block.text)
+        if buffer_blocks and block.heading_path and buffer_blocks[-1].heading_path != block.heading_path:
+            flush()
+            # Granica procedury/rozdziału jest silniejsza niż overlap. Ostatni
+            # krok poprzedniej procedury nie może wejść do następnej.
+            buffer_blocks = []
+            buffer_len = 0
         if buffer_len + block_len > target_chars and buffer_blocks:
             flush()
         buffer_blocks.append(block)

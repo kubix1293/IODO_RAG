@@ -30,7 +30,16 @@ def parse_pdf(path: Path) -> tuple[str, list[dict[str, object]]]:
 
 def parse_docx(path: Path) -> tuple[str, list[dict[str, object]]]:
     document = docx.Document(str(path))
-    paragraphs = [normalize_text(paragraph.text) for paragraph in document.paragraphs]
+    paragraphs = []
+    for paragraph in document.paragraphs:
+        value = normalize_text(paragraph.text)
+        if not value:
+            continue
+        style = paragraph.style.name if paragraph.style else ""
+        match = re.match(r"(?i)^heading\s+([1-6])$", style)
+        if match:
+            value = f"{'#' * int(match.group(1))} {value}"
+        paragraphs.append(value)
     paragraphs = [paragraph for paragraph in paragraphs if paragraph]
     text = normalize_text("\n\n".join(paragraphs))
     return text, [{"paragraphs": len(paragraphs)}]

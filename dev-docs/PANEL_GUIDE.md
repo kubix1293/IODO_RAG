@@ -66,7 +66,9 @@ Pod `/knowledge` senior/admin:
 3. załącza PDF lub DOCX;
 4. uruchamia import i indeksowanie.
 
-Dokument jest parsowany, dzielony na fragmenty `1100/150`, embedowany do 384 wymiarów i zapisywany w PostgreSQL/pgvector. Fragmenty stają się źródłami odpowiedzi modelu.
+Dokument jest parsowany, dzielony domyślnie na fragmenty `1600/220`, embedowany do 384 wymiarów i zapisywany w PostgreSQL/pgvector. Fragmenty stają się źródłami odpowiedzi modelu.
+
+Instrukcje techniczne mają osobną strategię: chunker rozpoznaje procedury i listy kroków, zachowuje nagłówki DOCX, nie łączy różnych procedur oraz powtarza nazwę procedury w długich fragmentach. Overlap działa tylko wewnątrz tej samej procedury.
 
 Dla zakresu globalnego pole klienta nie jest wysyłane. Backend toleruje również pustą wartość starszego formularza i traktuje ją jako brak klienta.
 

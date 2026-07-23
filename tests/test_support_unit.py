@@ -4,6 +4,9 @@ from support.workflow import interpret_locally,validate_feedback
 from support.worker import enrich_description,json_safe
 import support.graph as support_graph
 import support.learning as support_learning
+from iodo_rag.chunking import detect_document_type,split_into_chunks
+from iodo_rag.parsers import parse_docx
+from docx import Document
 
 def test_ranking_weights(): assert total(1,1,1)==1
 def test_effectiveness_has_prior(): assert effectiveness(1,0,0)<1
@@ -44,6 +47,20 @@ def test_knowledge_curator_rejects_unknown_ids(monkeypatch):
         assert False,"oczekiwano odrzucenia obcego ID"
     except ValueError:
         pass
+def test_instruction_chunking_keeps_procedures_separate():
+    text="# Restart usługi\n\n1. Otwórz panel usług.\n\n2. Uruchom usługę i sprawdź log.\n\n# Konfiguracja certyfikatu\n\n1. Otwórz magazyn certyfikatów.\n\n2. Zaimportuj certyfikat."
+    assert detect_document_type(text)=="instruction"
+    chunks=split_into_chunks(text,target_chars=100,overlap_chars=220)
+    assert len(chunks)>=2
+    assert all(not ("Restart usługi" in chunk["text"] and "Konfiguracja certyfikatu" in chunk["text"]) for chunk in chunks)
+    assert any("Restart usługi" in chunk["text"] and "Uruchom usługę" in chunk["text"] for chunk in chunks)
+def test_docx_parser_preserves_heading_style(tmp_path):
+    path=tmp_path/"instruction.docx"; document=Document()
+    document.add_heading("Procedura aktualizacji",level=1)
+    document.add_paragraph("1. Wykonaj kopię zapasową.")
+    document.save(path)
+    text,_=parse_docx(path)
+    assert "# Procedura aktualizacji" in text
 def test_feedback_validation():
     assert validate_feedback("not_helped","")[0]=="incomplete"
     assert validate_feedback("helped","nadal nie pomogło")[0]=="suspicious"
