@@ -68,6 +68,8 @@ Pod `/knowledge` senior/admin:
 
 Dokument jest parsowany, dzielony na fragmenty `1100/150`, embedowany do 384 wymiarów i zapisywany w PostgreSQL/pgvector. Fragmenty stają się źródłami odpowiedzi modelu.
 
+Dla zakresu globalnego pole klienta nie jest wysyłane. Backend toleruje również pustą wartość starszego formularza i traktuje ją jako brak klienta.
+
 ## Ustawienia administratora
 
 Administrator ma w menu pozycję **Ustawienia** (`/settings`). Może tam:

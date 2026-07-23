@@ -243,7 +243,7 @@ def knowledge_page(current=Depends(user)):
     <label>Zakres<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla klienta</option></select></label>
     <label id='client-label' hidden>Klient<select name='client_id'><option value=''>Wybierz klienta</option>{client_options}</select></label>
     <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Importuj i indeksuj</button></form><div id='message'></div></section>
-    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(form)}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>""",current,"knowledge")
+    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const data=new FormData(form);if(form.scope.value!=='client')data.delete('client_id');const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:data}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>""",current,"knowledge")
 
 @app.get("/cases",response_class=HTMLResponse)
 def cases_page(current=Depends(user)):
@@ -520,9 +520,11 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
             "curation_action":action,"provider":provider,"status":"approved"}
 
 @app.post("/api/v1/knowledge/documents",status_code=202)
-def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):
+def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:str|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):
     require_role(current,"senior_technician")
     if scope not in {"global","client"} or (scope=="client" and not client_id): raise HTTPException(422,"Nieprawidłowy zakres")
+    try: parsed_client_id=int(client_id) if client_id else None
+    except ValueError: raise HTTPException(422,"Nieprawidłowy identyfikator klienta")
     suffix=Path(file.filename or "").suffix.lower()
     if suffix not in {".pdf",".docx"}: raise HTTPException(415,"Obsługiwane są PDF i DOCX")
     root=Path(settings.upload_root); root.mkdir(parents=True,exist_ok=True); target=root/f"{uuid.uuid4()}{suffix}"
@@ -533,7 +535,7 @@ def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:int|N
         runtime=application_settings(cur)
         chunks=split_into_chunks(text,target_chars=runtime["chunk_target_chars"],overlap_chars=runtime["chunk_overlap_chars"])
         vectors=EmbeddingClient(settings.embedding_url,384).embed([str(x["text"]) for x in chunks])
-        cur.execute("INSERT INTO support.knowledge_documents(program_id,client_id,scope,source_file,title,sha256,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",(program_id,client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"])); doc=cur.fetchone()["id"]; audit(cur,current["id"],"knowledge_upload","knowledge_document",doc)
+        cur.execute("INSERT INTO support.knowledge_documents(program_id,client_id,scope,source_file,title,sha256,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",(program_id,parsed_client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"])); doc=cur.fetchone()["id"]; audit(cur,current["id"],"knowledge_upload","knowledge_document",doc)
         for index,(chunk,vector) in enumerate(zip(chunks,vectors)):
             cur.execute("INSERT INTO support.knowledge_chunks(document_id,chunk_index,chunk_text,metadata,embedding) VALUES(%s,%s,%s,%s::jsonb,%s::vector)",(doc,index,chunk["text"],json.dumps(chunk.get("metadata",{})),to_pgvector(vector)))
     return {"document_id":doc,"status":"indexed","chunks":len(chunks)}
