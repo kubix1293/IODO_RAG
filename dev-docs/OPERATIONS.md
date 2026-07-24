@@ -12,7 +12,7 @@ Odpowiedź asystenta ma domyślny limit 1200 tokenów. Na obecnym CPU lokalne ge
 
 Timeout połączenia workera z Ollamą jest sterowany przez `LLM_TIMEOUT_SECONDS` (wdrożenie: 1800 s). Nie należy ustawiać go poniżej czasu generowania 500 tokenów na docelowym CPU. Ponowienie czyści poprzedni komunikat błędu i ustawia zgłoszenie na `in_progress`.
 
-Zewnętrzny generator konfiguruje się wyłącznie przez sekrety środowiskowe `EXTERNAL_LLM_URL`, `EXTERNAL_LLM_MODEL`, `EXTERNAL_LLM_API_KEY` i `EXTERNAL_LLM_TIMEOUT_SECONDS`. URL ma wskazywać endpoint zgodny z OpenAI Chat Completions. Bez kompletu tych wartości albo po błędzie API worker automatycznie użyje Ollamy. Przełącznik biznesowy znajduje się w `/settings`.
+Zewnętrzny generator konfiguruje się wyłącznie przez sekrety środowiskowe `EXTERNAL_LLM_URL`, `EXTERNAL_LLM_MODEL`, `EXTERNAL_LLM_API_KEY` i `EXTERNAL_LLM_TIMEOUT_SECONDS`. URL ma wskazywać endpoint zgodny z OpenAI Chat Completions. Wdrożenie używa timeoutu 300 sekund. Analiza zgłoszenia może po błędzie API użyć Ollamy, natomiast kurator wiedzy zwraca błąd bez lokalnego fallbacku. Przełącznik biznesowy znajduje się w `/settings`.
 
 Aktualne wdrożenie używa OVH AI Endpoint `Qwen3.5-9B` przez `/v1/chat/completions`. `EXTERNAL_LLM_REASONING_EFFORT=none` jest wymagane, ponieważ domyślne rozumowanie modelu może zużyć cały limit na niewidoczne pole `reasoning`. Klucz pozostaje wyłącznie w nieśledzonym `.env`. Neutralny test połączenia trwał 0,56 s, a pełny StateGraph z ośmioma źródłami 19,99 s.
 
@@ -28,5 +28,9 @@ Minimalna weryfikacja wydania:
 4. potwierdzenie `GET /health` i zdrowia obu kontenerów;
 5. sprawdzenie logu Alembic oraz utworzenia najnowszej migracji;
 6. test dodania obrazu przypadku, podglądu i zatwierdzenia go do AI przez administratora.
+
+Jeżeli zadanie pozostanie osierocone w stanie `running`, administrator może anulować
+je w stanowisku zgłoszenia przyciskiem „Przerwij analizę”. Zgłoszenie wróci do
+`new`, a spóźniony wynik nie zostanie zapisany.
 
 Analiza podziału dokumentu jest uruchamiana jawnie z jego widoku. Długi dokument może wymagać wielu wywołań LLM; nie należy zamykać strony przed odpowiedzią endpointu. Stan `analysis_failed` pozwala ponowić analizę. Stan `pending_review` oznacza, że propozycje istnieją, ale nie są jeszcze widoczne dla retrieval. Po wdrożeniu migracji `0011_document_chunk_review` istniejące dokumenty pozostają `indexed`.

@@ -4,7 +4,7 @@ import json
 import re
 
 from .db import application_settings
-from .graph import hybrid_llm_answer
+from .graph import external_llm_answer, hybrid_llm_answer, plain_text_response
 from .security import anonymize
 
 ALLOWED_ACTIONS={"duplicate","supplement","new_solution","new_problem"}
@@ -28,7 +28,8 @@ def _json_object(text:str)->dict:
         return json.loads(match.group(0))
 
 
-def curate_knowledge(cur,description:str,resolution:str,title:str|None,candidates:list[dict],client_ref:str)->tuple[dict,str,str]:
+def curate_knowledge(cur,description:str,resolution:str,title:str|None,candidates:list[dict],client_ref:str,
+                     external_only:bool=False)->tuple[dict,str,str]:
     safe_candidates=[]
     allowed_problem_ids=set(); allowed_solution_ids=set()
     for row in candidates:
@@ -59,7 +60,13 @@ ZGŁOSZENIE: {anonymize(description)}
 FAKTYCZNE ROZWIĄZANIE: {anonymize(resolution)}
 KANDYDACI: {json.dumps(safe_candidates,ensure_ascii=False)}"""
     runtime=application_settings(cur)
-    answer,provider,error=hybrid_llm_answer(prompt,runtime)
+    if external_only:
+        if not runtime["external_llm_enabled"]:
+            raise RuntimeError("Zewnętrzny model jest wyłączony w ustawieniach")
+        answer=plain_text_response(external_llm_answer(prompt,runtime))
+        provider,error="external_api",""
+    else:
+        answer,provider,error=hybrid_llm_answer(prompt,runtime)
     decision=_json_object(answer)
     action=decision.get("action")
     if action not in ALLOWED_ACTIONS: raise ValueError("Model zwrócił nieobsługiwaną akcję")

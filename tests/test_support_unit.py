@@ -75,6 +75,18 @@ def test_knowledge_curator_rejects_unknown_ids(monkeypatch):
         assert False,"oczekiwano odrzucenia obcego ID"
     except ValueError:
         pass
+def test_knowledge_curator_external_only_never_uses_local_fallback(monkeypatch):
+    monkeypatch.setattr(support_learning,"application_settings",lambda cur:{"external_llm_enabled":1})
+    monkeypatch.setattr(support_learning,"external_llm_answer",
+                        lambda prompt,runtime:(_ for _ in ()).throw(TimeoutError("Qwen timeout")))
+    monkeypatch.setattr(support_learning,"hybrid_llm_answer",
+                        lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError("fallback nie może ruszyć")))
+    try:
+        support_learning.curate_knowledge(
+            None,"Opis","Rozwiązanie","Tytuł",[],"K-test",external_only=True)
+        assert False,"oczekiwano błędu Qwen bez lokalnego fallbacku"
+    except TimeoutError:
+        pass
 def test_curation_only_creates_case_for_new_knowledge():
     assert not support_learning.should_create_historical_case("duplicate")
     assert not support_learning.should_create_historical_case("supplement")

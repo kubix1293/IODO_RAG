@@ -21,3 +21,11 @@ Testy obrazów muszą sprawdzać walidację MIME i rozmiaru, RBAC zatwierdzenia 
 Dla obrazów przypadków testujemy także filtrowanie identyfikatorów wyłącznie do zrerankowanych `historical_case`, zachowanie kolejności trafień, deduplikację oraz pierwszeństwo obrazów bieżącego zgłoszenia w limicie czterech.
 
 Testy kuracji sprawdzają, że `duplicate` i `supplement` nie tworzą przypadku historycznego, wszystkie akcje aktualizują właściwy licznik skuteczności, a `new_solution` i `new_problem` tworzą osobny przypadek z tytułem kuratora.
+
+Ponowienie kuracji musi sprawdzać: RBAC seniora, brak fallbacku do Ollamy, `503`
+bez publikacji po timeoutcie Qwen, wycofanie wyłącznie rozwiązania/przypadku
+utworzonego przez poprzedni fallback oraz brak podwójnego naliczenia skuteczności.
+
+Testy anulowania sprawdzają RBAC administratora, zmianę aktywnego zadania na
+`cancelled`, zapis audytu, odrzucenie spóźnionego wyniku workera oraz odpowiedź
+`409` przy próbie uruchomienia drugiej aktywnej analizy tego samego zgłoszenia.

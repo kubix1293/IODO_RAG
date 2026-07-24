@@ -9,9 +9,12 @@ Status: działająca wersja pilotażowa na `:8081`. Zaimplementowano StateGraph 
 - administrator jawnie potwierdza anonimizację przed użyciem obrazu przez zewnętrzny model;
 - analiza wybiera maksymalnie cztery obrazy: najpierw bieżącego zgłoszenia, następnie z dopasowanych przypadków;
 - panel prezentuje obrazy powiązane z odnalezionymi przypadkami i rozwiązaniami;
-- zestaw jednostkowy obejmuje 32 testy i przechodzi w obrazie `support-web`.
+- administrator może anulować analizę; spóźniony wynik nie jest zapisywany;
+- kurator raportów używa wyłącznie Qwen, ma timeout 300 s i obsługuje bezpieczne ponowienie;
+- zestaw jednostkowy obejmuje 33 testy i przechodzi w obrazie `support-web`.
 
 - [Architektura](ARCHITECTURE.md)
+- [Projekt techniczny, grafy i wersje](TECHNICAL_DESIGN.md)
 - [Model danych](DATA_MODEL.md)
 - [Procesy](WORKFLOWS.md)
 - [Orkiestracja i agenci](AGENTS.md)

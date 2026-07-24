@@ -8,6 +8,12 @@ from .config import settings
 
 WORKER=f"{socket.gethostname()}:{os.getpid()}"
 
+def cancelled(job_id):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.support_jobs WHERE id=%s",(job_id,))
+        row=cur.fetchone()
+        return not row or row["status"]=="cancelled"
+
 def claim():
     with connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT * FROM support.support_jobs WHERE status IN ('queued','failed_retryable') AND available_at<=now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"""); job=cur.fetchone()
@@ -30,14 +36,26 @@ def process(job):
         "description":safe_description,"answers":safe_answers,"privacy_redactions":redactions,
         "history_candidates":[],"documentation_candidates":[],"history_redactions":[],"documentation_redactions":[],
     })
+    # An administrator may cancel a job while an external model is still
+    # returning its response. Never persist that late result.
+    if cancelled(job["id"]):
+        return
     state=json_safe(dict(result)); recognized=state["recognized"]; status=state["status"]
     with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.support_jobs WHERE id=%s FOR UPDATE",(job["id"],))
+        current=cur.fetchone()
+        if not current or current["status"]=="cancelled":
+            return
         cur.execute("UPDATE support.tickets SET status=%s,recognized=%s::jsonb,missing_fields=%s::jsonb,workflow_state=%s::jsonb,updated_at=now() WHERE id=%s",(status,json.dumps(recognized),json.dumps(recognized["missing"]),json.dumps(state),ticket["id"]))
         cur.execute("INSERT INTO support.workflow_checkpoints(ticket_id,encrypted_state,step) VALUES(%s,%s,%s) ON CONFLICT(ticket_id) DO UPDATE SET encrypted_state=excluded.encrypted_state,step=excluded.step,updated_at=now()",(ticket["id"],encrypt(state),state["step"]))
         cur.execute("UPDATE support.support_jobs SET status='done',updated_at=now(),last_error=NULL WHERE id=%s",(job["id"],))
 
 def fail(job,error):
     with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.support_jobs WHERE id=%s FOR UPDATE",(job["id"],))
+        current=cur.fetchone()
+        if not current or current["status"]=="cancelled":
+            return
         delay=min(300,2**min(job["attempts"],8)); cur.execute("UPDATE support.support_jobs SET status='failed_retryable',last_error=%s,available_at=now()+(%s||' seconds')::interval,updated_at=now() WHERE id=%s",(str(error)[:2000],delay,job["id"])); cur.execute("UPDATE support.tickets SET status='failed_retryable' WHERE id=%s",(job["ticket_id"],))
 
 def run():

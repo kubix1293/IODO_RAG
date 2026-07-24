@@ -352,7 +352,17 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
     senior_publish=""
     if current["role"] in {"senior_technician","admin"} and report and not report["published_solution_id"]:
         senior_publish="""<section id='knowledge-publication'><h2>Zatwierdzenie skuteczności i kuracja wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą. Duplikat tylko zaktualizuje skuteczność, uzupełnienie dopisze wiedzę do istniejącego rozwiązania, a osobny przypadek powstanie wyłącznie przy braku właściwego powiązania.</p><form id='publish-form'><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Zatwierdź skuteczność i poddaj kuracji</button></form><div id='publish-message'></div></section>"""
+    if (current["role"] in {"senior_technician","admin"} and report and report["published_solution_id"]
+            and curation and curation["provider"]!="external_api"
+            and (curation["decision"] or {}).get("action") in {"new_solution","new_problem"}):
+        retry_scope="client" if curation["scope"]=="client" else "global"
+        senior_publish=f"""<section id='knowledge-publication' class='warning'><h2>Ponowna kuracja raportu</h2>
+        <p>Ostatnią decyzję przygotował model lokalny ({html.escape(curation["provider"])}). Możesz wycofać utworzony przez nią wpis i ponownie przekazać raport wyłącznie do zewnętrznego kuratora Qwen.</p>
+        <form id='retry-curation-form'><input type='hidden' name='scope' value='{retry_scope}'><button>Ponów kurację przez Qwen</button></form>
+        <div id='publish-message'></div></section>"""
     running=bool(job and job["status"] in {"queued","running"}); auto_refresh="setTimeout(()=>location.reload(),3000);" if running else ""
+    cancel_button=("<button id='cancel-analysis' class='danger'>Przerwij analizę</button>"
+                   if running and current["role"]=="admin" else "")
     progress_html="<div id='work-status' class='progress'><span class='spinner'></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span></div>" if running else "<div id='work-status'></div>"
     clarification_html=""
     if ticket["status"]=="needs_information":
@@ -363,14 +373,14 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
     job_text=f"{job['status']}: {job.get('last_error') or ''}" if job else "brak"
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenie {ticket_id}</title>
     <style>body{{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem}}section{{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}}pre{{white-space:pre-wrap}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:9rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}.progress{{display:flex;gap:.8rem;align-items:center;padding:1rem;background:#eef6ff;border:1px solid #8abcec;border-radius:8px}}.warning{{background:#fff8df;border-color:#d5a72f}}.spinner{{width:20px;height:20px;border:3px solid #b9d7f2;border-top-color:#1769aa;border-radius:50%;animation:spin .8s linear infinite}}.image-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}}figure{{margin:0;padding:10px;border:1px solid var(--line);border-radius:10px}}figure img{{width:100%;height:160px;object-fit:contain;background:#f3f5f4;border-radius:6px}}figcaption{{font-size:12px;color:var(--muted);margin-top:8px}}figure button{{font-size:11px;margin-right:5px!important}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style>
-    <div class='desk-kicker'>Zgłoszenie #{str(ticket_id)[:8]}</div><p><a href='/tickets'>← Wszystkie zgłoszenia</a></p><h1>{html.escape(ticket['program_name'])} · {html.escape(ticket['client_name'])}</h1><p><span class='desk-status'>{html.escape(str(ticket['status']))}</span> &nbsp; zadanie: {html.escape(job_text)}</p>{progress_html}{clarification_html}
+    <div class='desk-kicker'>Zgłoszenie #{str(ticket_id)[:8]}</div><p><a href='/tickets'>← Wszystkie zgłoszenia</a></p><h1>{html.escape(ticket['program_name'])} · {html.escape(ticket['client_name'])}</h1><p><span class='desk-status'>{html.escape(str(ticket['status']))}</span> &nbsp; zadanie: {html.escape(job_text)}</p>{progress_html}{cancel_button}{clarification_html}
     <section><h2>Opis zgłoszenia</h2><pre>{html.escape(ticket['description'])}</pre><button id='analyse'>Uruchom / ponów analizę modelu</button></section>
     <section><h2>Zdjęcia i zrzuty ekranu</h2><p>Obraz typu „objaw” trafi do modelu dopiero po potwierdzeniu anonimizacji przez administratora. Obraz typu „rozwiązanie” zostanie powiązany z metodą podczas publikacji wiedzy.</p>
     <form id='image-form'><label>Rodzaj<select name='purpose'><option value='problem'>Objaw / komunikat błędu</option><option value='solution'>Krok rozwiązania</option></select></label><label>Obraz JPEG, PNG lub WebP (maks. 10 MB)<input type='file' name='file' accept='image/jpeg,image/png,image/webp' required></label><button>Dodaj obraz</button></form><div id='image-message'></div><div class='image-grid'>{ticket_images_html}</div></section>
     <section><h2>Proponowana odpowiedź</h2>{provider_note}<pre>{answer}</pre><h3>Powiązane obrazy przypadków i rozwiązań</h3><div class='image-grid'>{related_html}</div><h3>Źródła</h3>{source_html}</section>
     <section><h2>Zgłoś realizację i oceń podpowiedź</h2><form id='report-form'><label>Wynik<select name='outcome'><option value='helped'>Pomogła</option><option value='partially_helped'>Częściowo pomogła</option><option value='not_helped'>Nie pomogła</option></select></label><label>Ocena podpowiedzi 1–5<input name='suggestion_rating' type='number' min='1' max='5' value='3' required></label><label>Faktycznie zastosowane rozwiązanie<textarea name='actual_resolution' minlength='10' required></textarea></label><label>Zdjęcia kolejnych kroków lub rezultatu rozwiązania<input type='file' name='solution_images' accept='image/jpeg,image/png,image/webp' multiple></label><p>Te obrazy zostaną zapisane jako część rozwiązania i powiązane z metodą po zatwierdzeniu jej do bazy wiedzy.</p><label>Komentarz<textarea name='comment'></textarea></label><button>Zapisz raport realizacji wraz ze zdjęciami</button></form><div id='report-message'></div></section>{report_html}{senior_publish}
     <script>document.getElementById('image-form').onsubmit=async e=>{{e.preventDefault();const button=e.submitter;button.disabled=true;const r=await fetch('/api/v1/tickets/{ticket_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(e.target)}});document.getElementById('image-message').textContent=r.ok?'Obraz zapisany. Odświeżam…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),500);else button.disabled=false;}};document.querySelectorAll('.approve-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Potwierdzasz, że obraz został zanonimizowany i może zostać wysłany do zewnętrznego modelu?'))return;const data=new FormData();data.append('note','Anonimizacja potwierdzona w panelu');const r=await fetch('/api/v1/ticket-images/'+button.dataset.id+'/approve-for-ai',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:data}});if(r.ok)location.reload();else alert(await r.text());}});document.querySelectorAll('.delete-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Usunąć obraz?'))return;const r=await fetch('/api/v1/ticket-images/'+button.dataset.id,{{method:'DELETE',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});if(r.ok)location.reload();else alert(await r.text());}});</script>
-    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;const formData=new FormData(e.target);const files=[...e.target.solution_images.files];const b=Object.fromEntries([...formData.entries()].filter(([key])=>key!=='solution_images'));b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});const message=document.getElementById('report-message');if(!r.ok){{message.textContent='Błąd: '+await r.text();button.disabled=false;return;}}for(const file of files){{message.textContent='Raport zapisany. Dodaję zdjęcia rozwiązania…';const imageData=new FormData();imageData.append('purpose','solution');imageData.append('file',file);const ir=await fetch('/api/v1/tickets/{ticket_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:imageData}});if(!ir.ok){{message.textContent='Raport zapisany, ale obraz został odrzucony: '+await ir.text();button.disabled=false;return;}}}}message.textContent='Raport i zdjęcia rozwiązania zapisane. Odświeżam…';setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Kurator AI porównuje rozwiązanie z bazą wiedzy…';const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Wiedza przeanalizowana i opublikowana. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};{auto_refresh}</script></html>""",current,"tickets")
+    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const cancelButton=document.getElementById('cancel-analysis');if(cancelButton)cancelButton.onclick=async(e)=>{{if(!confirm('Przerwać trwającą analizę? Spóźniona odpowiedź modelu nie zostanie zapisana.'))return;e.target.disabled=true;const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/cancel',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location.reload();else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;const formData=new FormData(e.target);const files=[...e.target.solution_images.files];const b=Object.fromEntries([...formData.entries()].filter(([key])=>key!=='solution_images'));b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});const message=document.getElementById('report-message');if(!r.ok){{message.textContent='Błąd: '+await r.text();button.disabled=false;return;}}for(const file of files){{message.textContent='Raport zapisany. Dodaję zdjęcia rozwiązania…';const imageData=new FormData();imageData.append('purpose','solution');imageData.append('file',file);const ir=await fetch('/api/v1/tickets/{ticket_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:imageData}});if(!ir.ok){{message.textContent='Raport zapisany, ale obraz został odrzucony: '+await ir.text();button.disabled=false;return;}}}}message.textContent='Raport i zdjęcia rozwiązania zapisane. Odświeżam…';setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Kurator Qwen porównuje rozwiązanie z bazą wiedzy…';const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Wiedza przeanalizowana i opublikowana. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};const retryForm=document.getElementById('retry-curation-form');if(retryForm)retryForm.onsubmit=async(e)=>{{e.preventDefault();if(!confirm('Wycofać wpis utworzony przez model lokalny i ponowić kurację przez Qwen?'))return;const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Wycofuję słabą decyzję i przekazuję raport do Qwen…';const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-curation/retry',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Ponowna kuracja zakończona. Odświeżam…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};{auto_refresh}</script></html>""",current,"tickets")
 
 @app.get("/tickets/new",response_class=HTMLResponse)
 def new_ticket_page(current=Depends(user)):
@@ -792,8 +802,35 @@ def start(ticket_id:uuid.UUID,current=Depends(csrf)):
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1 FROM support.tickets WHERE id=%s FOR UPDATE",(ticket_id,))
         if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono zgłoszenia")
+        cur.execute("""SELECT id FROM support.support_jobs
+          WHERE ticket_id=%s AND status IN ('queued','running','failed_retryable')
+          LIMIT 1""",(ticket_id,))
+        if cur.fetchone():
+            raise HTTPException(409,"Analiza tego zgłoszenia już trwa")
         cur.execute("INSERT INTO support.support_jobs(id,ticket_id,kind) VALUES(%s,%s,'analysis')",(job,ticket_id)); audit(cur,current["id"],"analysis_start","ticket",ticket_id,{"job_id":str(job)})
     return {"job_id":job,"status":"queued"}
+
+@app.post("/api/v1/tickets/{ticket_id}/analysis/cancel")
+def cancel_analysis(ticket_id:uuid.UUID,current=Depends(csrf)):
+    require_role(current,"admin")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.tickets WHERE id=%s FOR UPDATE",(ticket_id,))
+        ticket=cur.fetchone()
+        if not ticket:
+            raise HTTPException(404,"Nie znaleziono zgłoszenia")
+        cur.execute("""UPDATE support.support_jobs
+          SET status='cancelled',last_error='Anulowano przez administratora',
+              locked_at=NULL,locked_by=NULL,updated_at=now()
+          WHERE ticket_id=%s AND status IN ('queued','running','failed_retryable')
+          RETURNING id""",(ticket_id,))
+        cancelled_jobs=[str(row["id"]) for row in cur.fetchall()]
+        if not cancelled_jobs:
+            raise HTTPException(409,"Brak aktywnej analizy do przerwania")
+        cur.execute("""UPDATE support.tickets SET status='new',updated_at=now()
+          WHERE id=%s AND status IN ('new','in_progress','failed_retryable')""",(ticket_id,))
+        audit(cur,current["id"],"analysis_cancel","ticket",ticket_id,
+              {"job_ids":cancelled_jobs})
+    return {"status":"cancelled","job_ids":cancelled_jobs}
 
 @app.get("/api/v1/tickets/{ticket_id}/workflow")
 def workflow(ticket_id:uuid.UUID,current=Depends(user)):
@@ -886,14 +923,10 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
         try:
             decision,provider,curation_error=curate_knowledge(
                 cur,row["description"],row["actual_resolution"],supplied_title,candidates,
-                client_reference(row["client_id"],settings.session_secret),
+                client_reference(row["client_id"],settings.session_secret),external_only=True,
             )
         except Exception as exc:
-            decision={"action":"new_problem","problem_id":None,"solution_id":None,"confidence":0.0,
-                      "reason":"Bezpieczny fallback po błędzie kuratora",
-                      "canonical_title":supplied_title or row["description"][:240],
-                      "canonical_description":row["description"]}
-            provider="deterministic_fallback"; curation_error=str(exc)[:300]
+            raise HTTPException(503,f"Kurator Qwen chwilowo niedostępny: {str(exc)[:300]}")
     with connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT published_solution_id FROM support.ticket_resolution_reports WHERE id=%s FOR UPDATE",(row["report_id"],))
         locked=cur.fetchone()
@@ -953,6 +986,53 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
                "provider":provider,"effectiveness":row["outcome"],"historical_case_created":bool(case_id)})
     return {"problem_id":problem_id,"solution_id":solution_id,"historical_case_id":case_id,
             "curation_action":action,"provider":provider,"status":"approved"}
+
+@app.post("/api/v1/tickets/{ticket_id}/resolution-curation/retry",status_code=201)
+def retry_resolution_curation(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT r.id report_id,r.outcome,r.published_solution_id
+          FROM support.ticket_resolution_reports r WHERE r.ticket_id=%s FOR UPDATE""",(ticket_id,))
+        report=cur.fetchone()
+        if not report or not report["published_solution_id"]:
+            raise HTTPException(409,"Brak opublikowanej kuracji do ponowienia")
+        cur.execute("""SELECT id,provider,scope,decision,created_at FROM support.knowledge_curation_runs
+          WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1 FOR UPDATE""",(ticket_id,))
+        previous=cur.fetchone()
+        if not previous or previous["provider"]=="external_api":
+            raise HTTPException(409,"Ostatnią kurację wykonał już model zewnętrzny")
+        decision=dict(previous["decision"] or {})
+        action=decision.get("action")
+        solution_id=decision.get("solution_id")
+        problem_id=decision.get("problem_id")
+        if action not in {"new_solution","new_problem"} or solution_id!=report["published_solution_id"]:
+            raise HTTPException(409,"Tej starszej decyzji nie można automatycznie wycofać")
+
+        # The fallback run created a separate solution/case. Remove only those
+        # artifacts before retrying; pre-existing knowledge is never modified.
+        cur.execute("UPDATE support.ticket_resolution_reports SET published_solution_id=NULL,published_at=NULL WHERE id=%s",
+                    (report["report_id"],))
+        cur.execute("DELETE FROM support.historical_cases WHERE solution_id=%s",(solution_id,))
+        cur.execute("DELETE FROM support.solution_image_links WHERE solution_id=%s",(solution_id,))
+        cur.execute("DELETE FROM support.ticket_problem_links WHERE ticket_id=%s AND problem_id=%s",
+                    (ticket_id,problem_id))
+        cur.execute("""DELETE FROM support.solutions WHERE id=%s
+          AND created_at >= %s - interval '2 seconds'""",(solution_id,previous["created_at"]))
+        if not cur.rowcount:
+            raise HTTPException(409,"Wpis utworzony przez poprzednią kurację jest już używany")
+        if action=="new_problem":
+            cur.execute("""DELETE FROM support.canonical_problems p WHERE p.id=%s
+              AND NOT EXISTS(SELECT 1 FROM support.solutions s WHERE s.problem_id=p.id)
+              AND NOT EXISTS(SELECT 1 FROM support.historical_cases h WHERE h.canonical_problem_id=p.id)""",
+                        (problem_id,))
+        cur.execute("""UPDATE support.tickets SET status='awaiting_feedback',closed_at=NULL,updated_at=now()
+          WHERE id=%s""",(ticket_id,))
+        audit(cur,current["id"],"curation_retry_prepare","ticket",ticket_id,
+              {"previous_run_id":str(previous["id"]),"previous_provider":previous["provider"],
+               "removed_solution_id":solution_id})
+    # Publishing now uses external_only=True. A Qwen failure returns 503 and
+    # leaves the report safely pending, ready for another retry.
+    return publish_resolution(ticket_id,body,current)
 
 @app.post("/api/v1/knowledge/documents",status_code=202)
 def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:str|None=Form(None),file:UploadFile=File(...),current=Depends(csrf)):

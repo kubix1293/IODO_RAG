@@ -2,6 +2,12 @@
 
 Stany: `new → needs_information → awaiting_problem_decision → ready → in_progress → awaiting_feedback → closed`. Z każdego automatycznego etapu możliwe jest `failed_retryable` i wznowienie.
 
+Administrator może przerwać zadanie `queued`, `running` lub `failed_retryable`.
+Zadanie przechodzi wtedy do terminalnego stanu `cancelled`, a zgłoszenie wraca do
+`new`, dzięki czemu można później świadomie uruchomić nową analizę. Anulowanie jest
+audytowane. Worker przed zapisem wyniku ponownie sprawdza stan zadania i odrzuca
+spóźnioną odpowiedź LLM.
+
 Worker uruchamia deterministyczny LangGraph `StateGraph`: interpretację, uzupełnienie, równoległą grupę dwóch agentów DB, reranking (domyślnie 8 źródeł) i generowanie odpowiedzi. Graf zatrzymuje się przed decyzją serwisanta. Powiązanie problemu, tryb rozwiązania, wyniki kroków i feedback są osobnymi, audytowanymi komendami. Statystyka rozwiązania rośnie dopiero przy zamknięciu.
 
 `history_agent` pobiera zatwierdzone przypadki historyczne, a `documentation_agent` wykonuje wyszukiwanie full-text/pgvector. Oba zawsze filtrują ten sam system, a agent dokumentacji dodatkowo widoczność klienta. Ollama tworzy proponowaną diagnozę i kroki na podstawie zrerankowanych źródeł. Po realizacji technik zapisuje ocenę i faktyczną metodę, a senior może opublikować ją jako zatwierdzone rozwiązanie dostępne następnym zgłoszeniom tego systemu.
@@ -13,6 +19,12 @@ Interpretacja rozróżnia `problem` i `task`. Brak kodu błędu lub wersji zatrz
 Dla `task` odpowiedź jest krótką listą „W ramach tego zadania pamiętaj o”, uwzględnia dostępną wiedzę klienta i kończy się odesłaniem do zakładki **Konsultacja AI** po szczegółową procedurę. Model nie może dopowiadać awarii ani diagnozy, której nie ma w treści.
 
 Po zapisaniu realizacji senior wybiera zakres globalny albo prywatny klienta i uruchamia kuratora wiedzy. Model porównuje przypadek z problemami i rozwiązaniami tego samego systemu oraz dopuszczalnego zakresu. Zwraca `duplicate`, `supplement`, `new_solution` albo `new_problem`. Kod waliduje wszystkie ID. Prywatna wiedza nie może uzupełnić globalnego rozwiązania — powstaje wtedy prywatny wariant pod istniejącym problemem.
+
+Kurator publikujący wiedzę działa wyłącznie przez zewnętrzny Qwen. Timeout API nie
+uruchamia lokalnej Ollamy i nie publikuje wyniku awaryjnego. Senior może ponowić
+kurację. Jeżeli starsza wersja aplikacji zdążyła utworzyć przez fallback osobne
+rozwiązanie lub problem, ponowienie najpierw usuwa wyłącznie artefakty tego
+konkretnego przebiegu, zachowuje raport i następnie uruchamia Qwen.
 
 Zatwierdzenie raportu nie wymaga ręcznego tytułu. Dla `duplicate` system wyłącznie zwiększa licznik `success_count`, `partial_count` albo `failure_count` wskazanego rozwiązania. Dla `supplement` aktualizuje licznik i dopisuje niepowtarzający się krok. Nowy `historical_case` jest tworzony wyłącznie dla `new_solution` lub `new_problem`; tytuł generuje kurator. Zatwierdzone rozwiązania i ich kroki są niezależnymi kandydatami retrievalu, więc uzupełnienie jest wyszukiwalne bez sztucznego duplikowania przypadku.
 

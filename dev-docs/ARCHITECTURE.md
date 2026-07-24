@@ -7,10 +7,15 @@ browser -> support-web -> PostgreSQL <- support-worker
                                       -> TEI / reranker / Ollama
 ```
 
-Awaria modelu zmienia zadanie i zgłoszenie na `failed_retryable`. StateGraph używa szyfrowanego `PostgresSaver`, a `ticket_id` jest identyfikatorem wątku. Tabela `workflow_checkpoints` przechowuje dodatkowy kompatybilny podgląd końcowego stanu.
+Awaria modelu podczas analizy zmienia zadanie i zgłoszenie na `failed_retryable`. StateGraph używa szyfrowanego `PostgresSaver`, a `ticket_id` jest identyfikatorem wątku. Tabela `workflow_checkpoints` przechowuje dodatkowy kompatybilny podgląd końcowego stanu. Administrator może anulować zadanie; worker odrzuca wtedy spóźniony wynik.
 
 Worker łączy fragmenty dokumentacji technicznej i zatwierdzone przypadki historyczne. Kandydaci są ograniczani przez system i klienta, rerankowani, a osiem najlepszych trafień stanowi kontekst odpowiedzi Ollamy. Raport realizacji może zostać opublikowany przez seniora jako rozwiązanie dostępne następnym zgłoszeniom.
 
 Import wiedzy stosuje chunking strukturalny. Dla instrukcji granicą jest procedura/nagłówek, następnie kroki i akapity; domyślny rozmiar to 1600 znaków z overlapem 220 znaków bez przenoszenia treści pomiędzy procedurami.
 
 Retrieval jest rozdzielony na równoległą grupę agentów DB: `history_agent` oraz `documentation_agent`. Szczegółową topologię opisuje [AGENTS.md](AGENTS.md).
+
+Analiza zgłoszenia preferuje zewnętrzny `Qwen3.5-9B` i może awaryjnie użyć
+lokalnego `llama3.2:3b`. Kurator publikujący raport działa wyłącznie przez Qwen:
+timeout 300 s zwraca błąd bez lokalnej publikacji. Szczegółowe grafy, granice,
+wersje i ograniczenia opisuje [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md).

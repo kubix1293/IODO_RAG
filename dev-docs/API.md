@@ -23,8 +23,11 @@ Analiza może zakończyć się ostrzeżeniem i deterministycznym podziałem awar
 Stanowisko pracy zgłoszenia:
 
 - `GET /tickets` i `GET /tickets/{id}/view` — lista oraz podgląd opisu, odpowiedzi modelu i źródeł;
+- `POST /api/v1/tickets/{id}/analysis/start` — uruchamia analizę; zwraca `409`, gdy aktywne zadanie już istnieje;
+- `POST /api/v1/tickets/{id}/analysis/cancel` — wyłącznie administrator anuluje aktywne zadanie analizy;
 - `POST /api/v1/tickets/{id}/resolution-report` — wynik realizacji, ocena 1–5 i faktyczna metoda;
 - `POST /api/v1/tickets/{id}/publish-resolution` — zatwierdzenie skuteczności i modelowa kuracja przez seniora/admina; wymaga `scope=global|client`, a `title` jest opcjonalny. Zwraca `curation_action`, `provider` i opcjonalny `historical_case_id`.
+- `POST /api/v1/tickets/{id}/resolution-curation/retry` — senior/admin wycofuje osobny wpis utworzony przez wcześniejszy fallback lokalny (`new_solution`/`new_problem`) i ponawia kurację raportu przez Qwen.
 
 Obrazy zgłoszeń:
 
@@ -44,6 +47,11 @@ Obrazy w bazie przypadków:
 
 Kurator może wskazać istniejące `problem_id` i `solution_id`, ale serwer akceptuje wyłącznie ID wcześniej przekazane modelowi jako kandydaci tego systemu i zakresu. `duplicate` aktualizuje tylko skuteczność, `supplement` dodatkowo uzupełnia istniejące rozwiązanie, a przypadek historyczny powstaje tylko dla `new_solution` lub `new_problem`.
 
+Kuracja raportów wymaga zewnętrznego Qwen i nie korzysta z lokalnej Ollamy jako
+fallbacku. Błąd lub timeout API zwraca `503` bez publikowania słabej decyzji.
+Raport pozostaje w kolejce i można ponowić kurację. Dla starszych wpisów
+opublikowanych wcześniej przez fallback panel pokazuje przycisk ponowienia.
+
 Konsultacje:
 
 - `GET /assistant` — panel trwałych rozmów serwisanta;
@@ -62,3 +70,7 @@ Administracja (wyłącznie `admin`):
 - `POST /api/v1/admin/settings` — zapis kontrolowanych parametrów analizy i importu.
 
 Pole `external_llm_enabled` przełącza strategię generowania: `true` oznacza zewnętrzne API jako pierwszy wybór z automatycznym fallbackiem do Ollamy, `false` wymusza wyłącznie Ollamę. Endpoint nie przyjmuje kluczy API.
+
+Anulowanie ustawia zadanie na `cancelled`, przywraca zgłoszenie do `new` i zapisuje
+`analysis_cancel` w audycie. Worker sprawdza stan przed zapisem, dlatego odpowiedź,
+która wróciła z modelu już po anulowaniu, nie może nadpisać zgłoszenia.
