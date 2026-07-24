@@ -27,6 +27,10 @@ Panel automatycznie uruchomi analizę i otworzy stanowisko pracy.
 
 Lista spraw znajduje się pod `/tickets`, a szczegóły pod `/tickets/{id}/view`. Widok pokazuje opis, status workera, odpowiedź modelu, dokumentację i podobne przypadki użyte jako źródła, raport realizacji oraz stan publikacji wiedzy.
 
+Do nowego lub istniejącego zgłoszenia można dodać JPEG, PNG albo WebP jako **objaw** lub **krok rozwiązania**. Obraz objawu jest widoczny lokalnie, ale model go nie otrzyma, dopóki administrator nie wybierze **Potwierdź anonimizację i dopuść do AI**, a serwisant nie uruchomi ponownie analizy. Obraz rozwiązania zostaje dołączony do metody podczas publikacji wiedzy i pojawia się przy kolejnych dopasowanych odpowiedziach.
+
+Formularz **Zgłoś realizację i oceń podpowiedź** ma osobne pole do dodania wielu zdjęć kolejnych kroków lub rezultatu. Najpierw zapisywany jest raport tekstowy, następnie obrazy typu `solution`. Przed publikacją rozwiązania należy sprawdzić, czy wszystkie zdjęcia są widoczne w zgłoszeniu.
+
 Przycisk **Uruchom / ponów analizę modelu** tworzy trwałe zadanie. Ekran odświeża się podczas pracy. Na obecnym CPU odpowiedź o limicie 500 tokenów może powstawać około dwóch minut.
 
 Podczas `queued` i `running` panel pokazuje animowany komunikat o wyszukiwaniu źródeł i przygotowaniu odpowiedzi. Jeżeli workflow przejdzie do `needs_information`, ekran wyświetla brakujące pola. Wpisz wartości (albo jawnie „brak”/„nieznana”) i wybierz **Uzupełnij i wznów analizę**. Dane zostaną dołączone do opisu używanego przez retrieval i model.
@@ -52,6 +56,8 @@ Worker wykonuje:
 
 Model wyodrębnia ze zgłoszenia system, moduł, usługę, operację, kod błędu, wersję i objaw. Odpowiedź zaczyna się naturalnym objaśnieniem problemu, a następnie prowadzi serwisanta przez kolejne numerowane czynności. Każdy krok mówi, co zrobić, dlaczego i jaki rezultat sprawdzić. Panel nie prezentuje odpowiedzi w stylu dokumentu prawnego, formalnych cytowań ani znaczników Markdown. Jeśli wiedza jest niewystarczająca, podpowiedź wskazuje dane potrzebne do dalszej diagnozy.
 
+Jeśli opis nie zawiera błędu, awarii, niedziałania ani innego objawu problemu, system traktuje go jako zadanie. Wtedy podpowiedź jest krótka, wskazuje najważniejsze rzeczy do zapamiętania — w tym właściwe uwagi klienta — i odsyła do **Konsultacji AI** po szczegółowe kroki.
+
 Do modelu nie jest wysyłany cały dokument. Kontekst zawiera tytuły i pełne, najlepiej dopasowane fragmenty wraz z sąsiednimi krokami procedury, maksymalnie do `24 000` znaków. Izolacja systemu i klienta jest sprawdzana także podczas dobierania sąsiednich fragmentów.
 
 Model jedynie doradza i nie wykonuje czynności w systemach klienta.
@@ -62,9 +68,11 @@ Po wykonaniu czynności technik wybiera wynik (`pomogła`, `częściowo pomogła
 
 ## Publikacja przez seniora
 
-Po raporcie senior/admin widzi w menu pozycję **Do zatwierdzenia** (`/knowledge/review`). Kolejka pokazuje nieopublikowane rozwiązania wraz z klientem, systemem, opisem zgłoszenia, faktycznym rozwiązaniem i oceną podpowiedzi. Akcja **Oceń i opublikuj** otwiera właściwe zgłoszenie bezpośrednio na formularzu zatwierdzania.
+Po raporcie senior/admin widzi w menu pozycję **Do zatwierdzenia** (`/knowledge/review`). Kolejka pokazuje niezatwierdzone raporty wraz z klientem, systemem, opisem zgłoszenia, faktycznym rozwiązaniem i oceną podpowiedzi. Akcja otwiera właściwe zgłoszenie bezpośrednio na formularzu zatwierdzania.
 
-Senior nadaje tytuł, wybiera zakres i publikuje metodę. Panel wiąże lub tworzy problem kanoniczny, tworzy zatwierdzone rozwiązanie i krok procedury oraz przypadek historyczny. Wiedza jest od razu dostępna kolejnym zgłoszeniom tego systemu, a zgłoszenie otrzymuje status `closed`. Raportu nie można opublikować dwukrotnie.
+Senior nie musi podawać tytułu — wybiera zakres i zatwierdza skuteczność. Duplikat tylko aktualizuje statystyki istniejącego rozwiązania, a uzupełnienie dopisuje nową wiedzę bez tworzenia kolejnego przypadku. Osobny przypadek z tytułem wygenerowanym przez kuratora powstaje wyłącznie dla nowego problemu lub nowej metody. Zgłoszenie otrzymuje status `closed`, a raportu nie można zatwierdzić dwukrotnie.
+
+Na stronie `/cases` znajduje się lista przypadków i formularz tworzenia wraz z osobnymi polami na screeny błędu oraz rozwiązania. Kliknięcie tytułu otwiera kartę `/cases/{id}`, gdzie senior może później dodawać i usuwać obrazy. Administrator używa przycisku „Potwierdź anonimizację i dopuść do AI”. Dopiero wtedy obraz może uczestniczyć w analizie następnego zgłoszenia.
 
 Przed zapisem kurator Qwen porównuje metodę z obecną wiedzą. Może uznać ją za duplikat, dopisać nowy krok do tej samej metody, utworzyć alternatywne rozwiązanie istniejącego problemu albo nowy problem. Senior wybiera przy publikacji zakres globalny lub prywatny bieżącego klienta.
 
@@ -79,11 +87,14 @@ Pod `/knowledge` senior/admin:
 1. wybiera system;
 2. wybiera zakres globalny albo prywatny klienta;
 3. załącza PDF lub DOCX;
-4. uruchamia import i indeksowanie.
+4. przesyła dokument w stanie roboczym;
+5. otwiera dokument i uruchamia analizę podziału przez AI;
+6. przegląda mapę, tytuły, moduły, operacje, strony i dokładną treść propozycji;
+7. wybiera **Akceptuję podział i indeksuję**.
 
-Dokument jest parsowany, dzielony domyślnie na fragmenty `1600/220`, embedowany do 384 wymiarów i zapisywany w PostgreSQL/pgvector. Fragmenty stają się źródłami odpowiedzi modelu.
+Embedding 384D powstaje dopiero po akceptacji. Do tego czasu propozycje nie uczestniczą w wyszukiwaniu. Model analizuje mapę całej instrukcji, a następnie grupuje małe, kolejne części i nadaje im tytuł techniczny, moduł, operację, typ oraz słowa kluczowe. Aplikacja zachowuje oryginalny tekst i wymusza maksymalnie `3600` znaków na zaakceptowany fragment.
 
-Instrukcje techniczne mają osobną strategię: chunker rozpoznaje procedury i listy kroków, zachowuje nagłówki DOCX, nie łączy różnych procedur oraz powtarza nazwę procedury w długich fragmentach. Overlap działa tylko wewnątrz tej samej procedury.
+Lista `/knowledge` pokazuje wszystkie dokumenty, ich system, zakres, stan i liczbę fragmentów. Dokument można usunąć wraz z plikiem i chunkami, chyba że jest powiązanym dowodem zatwierdzonego rozwiązania.
 
 Dla zakresu globalnego pole klienta nie jest wysyłane. Backend toleruje również pustą wartość starszego formularza i traktuje ją jako brak klienta.
 

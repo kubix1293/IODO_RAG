@@ -10,6 +10,15 @@ from .security import anonymize
 ALLOWED_ACTIONS={"duplicate","supplement","new_solution","new_problem"}
 
 
+def should_create_historical_case(action:str)->bool:
+    return action in {"new_solution","new_problem"}
+
+
+def effectiveness_counter(outcome:str)->str:
+    return {"helped":"success_count","partially_helped":"partial_count",
+            "not_helped":"failure_count"}[outcome]
+
+
 def _json_object(text:str)->dict:
     cleaned=re.sub(r"^```(?:json)?\s*|\s*```$","",text.strip(),flags=re.I)
     try: return json.loads(cleaned)
@@ -19,7 +28,7 @@ def _json_object(text:str)->dict:
         return json.loads(match.group(0))
 
 
-def curate_knowledge(cur,description:str,resolution:str,title:str,candidates:list[dict],client_ref:str)->tuple[dict,str,str]:
+def curate_knowledge(cur,description:str,resolution:str,title:str|None,candidates:list[dict],client_ref:str)->tuple[dict,str,str]:
     safe_candidates=[]
     allowed_problem_ids=set(); allowed_solution_ids=set()
     for row in candidates:
@@ -45,7 +54,7 @@ Zwróć wyłącznie JSON:
 {{"action":"duplicate|supplement|new_solution|new_problem","problem_id":null,"solution_id":null,"confidence":0.0,"reason":"krótko","canonical_title":"...","canonical_description":"..."}}
 
 REFERENCJA KLIENTA: {client_ref}
-TYTUŁ: {anonymize(title)}
+TYTUŁ PODANY PRZEZ SERWISANTA: {anonymize(title or "brak — utwórz zwięzły tytuł tylko jeśli potrzebny jest nowy wpis")}
 ZGŁOSZENIE: {anonymize(description)}
 FAKTYCZNE ROZWIĄZANIE: {anonymize(resolution)}
 KANDYDACI: {json.dumps(safe_candidates,ensure_ascii=False)}"""
@@ -61,6 +70,7 @@ KANDYDACI: {json.dumps(safe_candidates,ensure_ascii=False)}"""
         raise ValueError("Model wskazał rozwiązanie spoza kandydatów")
     decision["confidence"]=max(0.0,min(1.0,float(decision.get("confidence") or 0)))
     decision["reason"]=str(decision.get("reason") or "")[:500]
-    decision["canonical_title"]=str(decision.get("canonical_title") or title)[:240]
+    fallback_title=(title or description or "Nowe rozwiązanie").strip()[:240]
+    decision["canonical_title"]=str(decision.get("canonical_title") or fallback_title)[:240]
     decision["canonical_description"]=str(decision.get("canonical_description") or description)[:2000]
     return decision,provider,error

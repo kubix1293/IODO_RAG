@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import math
 import re
 import uuid
+from pathlib import Path
 from typing import TypedDict
 
 import psycopg
@@ -133,13 +135,26 @@ def history_agent_node(state: SupportState):
         documentation_limit = min(12, runtime["retrieval_candidates"])
         limit = max(0, runtime["retrieval_candidates"] - documentation_limit)
         cur.execute(
-            """SELECT id::text id,'historical_case' kind,
-              ticket_description||E'\nRozwiązanie: '||resolution chunk_text,title,
-              NULL::bigint client_id,NULL::real vector_score,NULL::real text_score
-              FROM support.historical_cases
-              WHERE program_id=%s AND status='approved' AND (client_id IS NULL OR client_id=%s)
-              ORDER BY created_at DESC LIMIT %s""",
-            (state["program_id"],state["client_id"],limit),
+            """SELECT id,kind,solution_id,chunk_text,title,client_id,
+              NULL::real vector_score,NULL::real text_score FROM (
+                SELECT id::text id,'historical_case' kind,solution_id,
+                  ticket_description||E'\nRozwiązanie: '||resolution chunk_text,title,
+                  client_id,created_at
+                FROM support.historical_cases
+                WHERE program_id=%s AND status='approved' AND (client_id IS NULL OR client_id=%s)
+                UNION ALL
+                SELECT 'solution-'||s.id::text id,'approved_solution' kind,s.id solution_id,
+                  p.normalized_description||E'\nRozwiązanie: '||s.summary||
+                  COALESCE(E'\nKroki:\n'||string_agg(ss.position||'. '||ss.instruction,E'\n' ORDER BY ss.position),'') chunk_text,
+                  s.title,s.client_id,s.created_at
+                FROM support.solutions s
+                JOIN support.canonical_problems p ON p.id=s.problem_id
+                LEFT JOIN support.solution_steps ss ON ss.solution_id=s.id
+                WHERE p.program_id=%s AND s.status='approved'
+                  AND (s.client_id IS NULL OR s.client_id=%s)
+                GROUP BY s.id,p.normalized_description
+              ) knowledge ORDER BY created_at DESC LIMIT %s""",
+            (state["program_id"],state["client_id"],state["program_id"],state["client_id"],limit),
         )
         safe=[]; redactions=[]
         for raw in cur.fetchall():
@@ -157,12 +172,12 @@ def documentation_agent_node(state: SupportState):
         limit = min(12, runtime["retrieval_candidates"])
         cur.execute(
             """SELECT k.id::text id,'documentation' kind,k.document_id,k.chunk_index,
-              k.chunk_text,d.title,d.client_id,
+              k.chunk_text,COALESCE(k.metadata->>'title',d.title) title,d.client_id,
               1-(k.embedding<=>%s::vector) vector_score,
               ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s)) text_score
               FROM support.knowledge_chunks k
               JOIN support.knowledge_documents d ON d.id=k.document_id
-              WHERE d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
+              WHERE d.status='indexed' AND d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
               ORDER BY GREATEST(1-(k.embedding<=>%s::vector),
                 ts_rank_cd(k.search_tsv,plainto_tsquery('simple',%s))) DESC LIMIT %s""",
             (
@@ -194,11 +209,11 @@ def expand_documentation_neighbors(selected:list[dict],state:SupportState,cur)->
             continue
         cur.execute(
             """SELECT k.id::text id,'documentation' kind,k.document_id,k.chunk_index,
-              k.chunk_text,d.title,d.client_id,NULL::real vector_score,NULL::real text_score
+              k.chunk_text,COALESCE(k.metadata->>'title',d.title) title,d.client_id,NULL::real vector_score,NULL::real text_score
               FROM support.knowledge_chunks k
               JOIN support.knowledge_documents d ON d.id=k.document_id
               WHERE k.document_id=%s AND k.chunk_index BETWEEN %s AND %s
-                AND d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
+                AND d.status='indexed' AND d.program_id=%s AND (d.scope='global' OR d.client_id=%s)
               ORDER BY k.chunk_index""",
             (
                 row["document_id"],
@@ -241,10 +256,14 @@ def reranking_node(state: SupportState):
     return {"sources":safe,"privacy_redactions":redactions,"step":"answer_generation"}
 
 
-def external_llm_answer(prompt:str,runtime:dict)->str:
+def external_llm_answer(prompt:str,runtime:dict,images:list[dict]|None=None)->str:
     if not settings.external_llm_url or not settings.external_llm_model or not settings.external_llm_api_key:
         raise RuntimeError("Zewnętrzne API LLM nie jest skonfigurowane")
-    payload={"model":settings.external_llm_model,"messages":[{"role":"user","content":prompt}],
+    content: str|list[dict] = prompt
+    if images:
+        content=[{"type":"text","text":prompt}]
+        content.extend({"type":"image_url","image_url":{"url":image["data_url"]}} for image in images)
+    payload={"model":settings.external_llm_model,"messages":[{"role":"user","content":content}],
              "temperature":0.1,"max_tokens":runtime["llm_response_tokens"]}
     if settings.external_llm_reasoning_effort:
         payload["reasoning_effort"]=settings.external_llm_reasoning_effort
@@ -278,16 +297,81 @@ def plain_text_response(answer:str)->str:
     return answer.replace("*","").strip()
 
 
-def hybrid_llm_answer(prompt:str,runtime:dict)->tuple[str,str,str]:
+def hybrid_llm_answer(prompt:str,runtime:dict,images:list[dict]|None=None)->tuple[str,str,str]:
     external_error=""
     if runtime["external_llm_enabled"]:
         try:
-            return plain_text_response(external_llm_answer(prompt,runtime)),"external_api",""
+            answer=external_llm_answer(prompt,runtime,images) if images else external_llm_answer(prompt,runtime)
+            return plain_text_response(answer),"external_api",""
         except Exception as exc:
             external_error=str(exc)[:300]
     answer=plain_text_response(local_llm_answer(prompt,runtime))
     provider="ollama_fallback" if runtime["external_llm_enabled"] else "ollama_local"
     return answer,provider,external_error
+
+
+def approved_ticket_images(ticket_id:str|uuid.UUID)->list[dict]:
+    """Load only screenshots explicitly approved by an administrator for AI."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id,storage_path,mime_type,original_name FROM support.ticket_images
+          WHERE ticket_id=%s AND purpose='problem' AND ai_approved_at IS NOT NULL
+          ORDER BY uploaded_at LIMIT 4""",(ticket_id,))
+        rows=cur.fetchall()
+    root=(Path(settings.upload_root)/"ticket-images").resolve()
+    result=[]
+    for row in rows:
+        path=Path(row["storage_path"]).resolve()
+        if root not in path.parents or not path.is_file():
+            continue
+        encoded=base64.b64encode(path.read_bytes()).decode("ascii")
+        result.append({"id":str(row["id"]),"name":row["original_name"],
+                       "origin":"current_ticket","purpose":"problem",
+                       "data_url":f"data:{row['mime_type']};base64,{encoded}"})
+    return result
+
+
+def historical_case_ids_from_sources(sources:list[dict])->list[str]:
+    """Keep matched historical cases in reranked order without duplicates."""
+    result=[]
+    for source in sources or []:
+        if source.get("kind")!="historical_case":
+            continue
+        try:
+            case_id=str(uuid.UUID(str(source.get("id"))))
+        except (TypeError,ValueError,AttributeError):
+            continue
+        if case_id not in result:
+            result.append(case_id)
+    return result
+
+
+def approved_analysis_images(state:SupportState,limit:int=4)->list[dict]:
+    """Current ticket screenshots first, then approved images of matched cases."""
+    result=approved_ticket_images(state["ticket_id"])[:limit]
+    case_ids=historical_case_ids_from_sources(state.get("sources") or [])
+    if len(result)>=limit or not case_ids:
+        return result
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT id,case_id,purpose,storage_path,mime_type,original_name
+          FROM support.historical_case_images
+          WHERE case_id=ANY(%s::uuid[]) AND ai_approved_at IS NOT NULL
+          ORDER BY array_position(%s::uuid[],case_id),uploaded_at""",(case_ids,case_ids))
+        rows=cur.fetchall()
+    root=(Path(settings.upload_root)/"case-images").resolve()
+    for row in rows:
+        if len(result)>=limit:
+            break
+        path=Path(row["storage_path"]).resolve()
+        if root not in path.parents or not path.is_file():
+            continue
+        encoded=base64.b64encode(path.read_bytes()).decode("ascii")
+        result.append({
+            "id":str(row["id"]),"name":row["original_name"],
+            "origin":"historical_case","purpose":row["purpose"],
+            "case_id":str(row["case_id"]),
+            "data_url":f"data:{row['mime_type']};base64,{encoded}",
+        })
+    return result
 
 
 def build_technical_support_prompt(state:SupportState)->str:
@@ -307,6 +391,11 @@ def build_technical_support_prompt(state:SupportState)->str:
     context="\n\n".join(blocks)
     return f"""Jesteś starszym inżynierem wsparcia technicznego IT. Przygotuj praktyczną podpowiedź dla serwisanta rozwiązującego zgłoszenie dotyczące aplikacji lub infrastruktury.
 
+Najpierw rozróżnij rodzaj zgłoszenia:
+- PROBLEM: treść jasno opisuje błąd, awarię, niedziałanie, blokadę, niepoprawny rezultat, komunikat błędu albo brak możliwości wykonania czynności.
+- ZADANIE: treść nazywa czynność do wykonania, np. aktualizację, konfigurację, instalację, import lub przygotowanie danych, ale nie opisuje niedziałania.
+- Nie wymyślaj problemu ani awarii, jeśli zgłoszenie ich nie zawiera. Klasyfikacja wstępna aplikacji: {(state.get("recognized") or {}).get("issue_kind","nieustalona")}.
+
 Zasady analizy:
 1. Najpierw wyodrębnij najważniejsze słowa kluczowe ze zgłoszenia: nazwy systemu, modułu, usługi, procesu, operacji, komunikaty i kody błędów, wersję oraz objaw.
 2. Porównaj je z materiałami technicznymi. Najwyżej traktuj zgodność dokładnego kodu błędu, komponentu, wersji i wykonywanej operacji. Pomiń materiały dotyczące innego problemu, nawet jeśli zawierają podobne ogólne słowa.
@@ -315,8 +404,11 @@ Zasady analizy:
 5. Nie twierdź, że czynność została wykonana. To ma być instrukcja dla serwisanta.
 6. Jeśli dopasowanie jest słabe, jasno napisz, jakich danych technicznych brakuje, zamiast zgadywać.
 
-Sposób odpowiedzi:
+Sposób odpowiedzi dla PROBLEMU:
 Najpierw wyjaśnij serwisantowi w kilku naturalnych zdaniach, jak rozumiesz problem i jaka jest najbardziej prawdopodobna przyczyna. Następnie przeprowadź go przez rozwiązanie, używając kolejnych numerowanych kroków: 1., 2., 3. Każdy krok wyjaśnij prostym językiem technicznym: co zrobić, dlaczego oraz jaki wynik powinien się pojawić. Na końcu opisz, jak zweryfikować rezultat i kiedy przerwać działania lub eskalować problem.
+
+Sposób odpowiedzi dla ZADANIA:
+Nie diagnozuj przyczyny i nie nazywaj czynności problemem. Odpowiedz krótko, zaczynając od „W ramach tego zadania pamiętaj o:”, a następnie wymień tylko najważniejsze praktyczne punkty wynikające z odnalezionej wiedzy. Jeśli materiał mówi, że podobna czynność była wcześniej wykonywana u tego klienta, zaznacz krótko „U tego klienta wcześniej zwrócono uwagę na:”, ale nie ujawniaj danych innych klientów. Nie twórz rozbudowanej procedury. Ostatnie zdanie musi brzmieć dokładnie: „W celu uzyskania szczegółowych informacji przejdź do zakładki Konsultacja AI.”
 
 Nie używaj składni Markdown. Nie stosuj gwiazdek, podwójnych gwiazdek, znaków #, tabel ani sztucznych formalnych nagłówków. Odpowiedź ma brzmieć jak rzeczowa rozmowa doświadczonego serwisanta z drugim serwisantem.
 
@@ -333,11 +425,21 @@ def answer_node(state: SupportState):
     prompt=build_technical_support_prompt(state)
     with connect() as conn, conn.cursor() as cur:
         runtime = application_settings(cur)
-    answer,provider,external_error=hybrid_llm_answer(prompt,runtime)
+    images=approved_analysis_images(state)
+    if images:
+        current_count=sum(image.get("origin")=="current_ticket" for image in images)
+        historical_count=sum(image.get("origin")=="historical_case" for image in images)
+        prompt+=f"""\n\nZATWIERDZONE ZRZUTY EKRANU:
+Administrator potwierdził anonimizację wszystkich przekazanych obrazów.
+Pierwsze obrazy bieżącego zgłoszenia: {current_count}. Obrazy odnalezionych przypadków historycznych: {historical_count}.
+Obrazy bieżącego zgłoszenia pokazują obecny stan. Obrazy historyczne są wyłącznie przykładami objawu albo wykonania rozwiązania z odnalezionego przypadku; nie twierdź, że pokazują bieżące zgłoszenie.
+Odczytaj komunikaty, moduł, pola i stan interfejsu. Nie próbuj identyfikować osób. Jeśli obraz jest nieczytelny, zaznacz to zamiast zgadywać."""
+    answer,provider,external_error=hybrid_llm_answer(prompt,runtime,images=images)
     return {
         "proposed_answer":answer,
         "llm_provider":provider,
         "external_llm_error":external_error,
+        "analyzed_image_ids":[image["id"] for image in images] if provider=="external_api" else [],
         "status": "awaiting_problem_decision",
         "step": "problem_decision",
     }

@@ -10,13 +10,39 @@ Przypadki historyczne:
 
 Interfejs panelu udostępnia `GET /login`, `GET /tickets/new` dla ręcznego wprowadzania zgłoszeń oraz `GET /knowledge` dla importu PDF/DOCX przez seniora/admina. Dokument jest zawsze przypisany do jednego systemu oraz zakresu globalnego albo prywatnego klienta.
 
+Dokumentacja techniczna:
+
+- `POST /api/v1/knowledge/documents` — zapisuje plik jako `pending_analysis`; nie tworzy jeszcze embeddingów;
+- `GET /knowledge/documents/{id}` — mapa dokumentu, dokładny podgląd propozycji i metadanych;
+- `POST /api/v1/knowledge/documents/{id}/analyze` — przekrojowa interpretacja dokumentu i propozycja logicznych chunków przez hybrydowy LLM;
+- `POST /api/v1/knowledge/documents/{id}/approve` — akceptacja seniora/admina, embedding 384D i publikacja chunków;
+- `DELETE /api/v1/knowledge/documents/{id}` — usuwa plik, propozycje i chunki, o ile dokument nie jest dowodem zatwierdzonego rozwiązania.
+
+Analiza może zakończyć się ostrzeżeniem i deterministycznym podziałem awaryjnym. Taki podział nadal wymaga przeglądu i akceptacji. Endpointy modyfikujące wymagają CSRF.
+
 Stanowisko pracy zgłoszenia:
 
 - `GET /tickets` i `GET /tickets/{id}/view` — lista oraz podgląd opisu, odpowiedzi modelu i źródeł;
 - `POST /api/v1/tickets/{id}/resolution-report` — wynik realizacji, ocena 1–5 i faktyczna metoda;
-- `POST /api/v1/tickets/{id}/publish-resolution` — modelowa kuracja i publikacja metody przez seniora/admina; przyjmuje `title` i `scope=global|client`, zwraca `curation_action` oraz `provider`.
+- `POST /api/v1/tickets/{id}/publish-resolution` — zatwierdzenie skuteczności i modelowa kuracja przez seniora/admina; wymaga `scope=global|client`, a `title` jest opcjonalny. Zwraca `curation_action`, `provider` i opcjonalny `historical_case_id`.
 
-Kurator może wskazać istniejące `problem_id` i `solution_id`, ale serwer akceptuje wyłącznie ID wcześniej przekazane modelowi jako kandydaci tego systemu i zakresu.
+Obrazy zgłoszeń:
+
+- `POST /api/v1/tickets/{id}/images` — multipart `purpose=problem|solution` oraz JPEG/PNG/WebP do 10 MB;
+- `GET /api/v1/ticket-images/{id}` — uwierzytelniony podgląd obrazu;
+- `POST /api/v1/ticket-images/{id}/approve-for-ai` — wyłącznie administrator potwierdza wcześniejszą anonimizację i dopuszcza obraz problemu do zewnętrznego modelu;
+- `DELETE /api/v1/ticket-images/{id}` — autor albo senior/admin usuwa obraz.
+
+Obrazy niezatwierdzone nie są wysyłane do modelu. Publikacja rozwiązania wiąże obrazy typu `solution` z zatwierdzoną metodą.
+
+Obrazy w bazie przypadków:
+
+- `POST /api/v1/cases/{id}/images` — senior/admin dodaje JPEG, PNG albo WebP jako `problem` lub `solution`;
+- `GET /api/v1/case-images/{id}` — uwierzytelniony podgląd;
+- `POST /api/v1/case-images/{id}/approve-for-ai` — administrator potwierdza anonimizację;
+- `DELETE /api/v1/case-images/{id}` — autor albo senior/admin usuwa obraz.
+
+Kurator może wskazać istniejące `problem_id` i `solution_id`, ale serwer akceptuje wyłącznie ID wcześniej przekazane modelowi jako kandydaci tego systemu i zakresu. `duplicate` aktualizuje tylko skuteczność, `supplement` dodatkowo uzupełnia istniejące rozwiązanie, a przypadek historyczny powstaje tylko dla `new_solution` lub `new_problem`.
 
 Konsultacje:
 

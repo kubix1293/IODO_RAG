@@ -5,10 +5,12 @@ from support.worker import enrich_description,json_safe
 import support.graph as support_graph
 import support.learning as support_learning
 import support.chat as support_chat
+import support.knowledge_import as knowledge_import
 from iodo_rag.chunking import detect_document_type,split_into_chunks
 from iodo_rag.parsers import parse_docx
 from docx import Document
 import requests
+import uuid
 
 def test_ranking_weights(): assert total(1,1,1)==1
 def test_effectiveness_has_prior(): assert effectiveness(1,0,0)<1
@@ -31,6 +33,30 @@ def test_hybrid_llm_falls_back_to_ollama(monkeypatch):
     monkeypatch.setattr(support_graph,"local_llm_answer",lambda prompt,runtime:"LOCAL")
     answer,provider,error=support_graph.hybrid_llm_answer("prompt",{"external_llm_enabled":1})
     assert answer=="LOCAL" and provider=="ollama_fallback" and "timeout" in error
+def test_hybrid_llm_passes_approved_images_only_to_external(monkeypatch):
+    seen={}
+    monkeypatch.setattr(support_graph,"external_llm_answer",
+                        lambda prompt,runtime,images:seen.setdefault("images",images) and "VISION")
+    answer,provider,error=support_graph.hybrid_llm_answer(
+        "prompt",{"external_llm_enabled":1},
+        images=[{"id":"1","data_url":"data:image/png;base64,AA=="}])
+    assert answer=="VISION" and provider=="external_api" and not error
+    assert seen["images"][0]["id"]=="1"
+def test_historical_case_image_sources_are_filtered_deduplicated_and_ordered():
+    first=str(uuid.uuid4()); second=str(uuid.uuid4())
+    sources=[
+        {"kind":"documentation","id":"12"},
+        {"kind":"historical_case","id":first},
+        {"kind":"historical_case","id":"not-a-uuid"},
+        {"kind":"historical_case","id":first},
+        {"kind":"historical_case","id":second},
+    ]
+    assert support_graph.historical_case_ids_from_sources(sources)==[first,second]
+def test_current_ticket_images_precede_historical_case_images(monkeypatch):
+    current=[{"id":"ticket-image","origin":"current_ticket"}]
+    monkeypatch.setattr(support_graph,"approved_ticket_images",lambda ticket_id:current)
+    monkeypatch.setattr(support_graph,"historical_case_ids_from_sources",lambda sources:[])
+    assert support_graph.approved_analysis_images({"ticket_id":"x","sources":[]})==current
 def test_knowledge_curator_reuses_existing_solution(monkeypatch):
     monkeypatch.setattr(support_learning,"application_settings",lambda cur:{"external_llm_enabled":1})
     monkeypatch.setattr(support_learning,"hybrid_llm_answer",lambda prompt,runtime:(
@@ -49,6 +75,15 @@ def test_knowledge_curator_rejects_unknown_ids(monkeypatch):
         assert False,"oczekiwano odrzucenia obcego ID"
     except ValueError:
         pass
+def test_curation_only_creates_case_for_new_knowledge():
+    assert not support_learning.should_create_historical_case("duplicate")
+    assert not support_learning.should_create_historical_case("supplement")
+    assert support_learning.should_create_historical_case("new_solution")
+    assert support_learning.should_create_historical_case("new_problem")
+def test_effectiveness_counter_mapping():
+    assert support_learning.effectiveness_counter("helped")=="success_count"
+    assert support_learning.effectiveness_counter("partially_helped")=="partial_count"
+    assert support_learning.effectiveness_counter("not_helped")=="failure_count"
 def test_instruction_chunking_keeps_procedures_separate():
     text="# Restart usługi\n\n1. Otwórz panel usług.\n\n2. Uruchom usługę i sprawdź log.\n\n# Konfiguracja certyfikatu\n\n1. Otwórz magazyn certyfikatów.\n\n2. Zaimportuj certyfikat."
     assert detect_document_type(text)=="instruction"
@@ -56,6 +91,45 @@ def test_instruction_chunking_keeps_procedures_separate():
     assert len(chunks)>=2
     assert all(not ("Restart usługi" in chunk["text"] and "Konfiguracja certyfikatu" in chunk["text"]) for chunk in chunks)
     assert any("Restart usługi" in chunk["text"] and "Uruchom usługę" in chunk["text"] for chunk in chunks)
+
+def test_chunking_enforces_hard_limit_for_one_huge_legal_block():
+    text="Art. 1. "+("bardzo długi tekst bez strukturalnego podziału. "*300)
+    chunks=split_into_chunks(text,target_chars=700,overlap_chars=0)
+    assert len(chunks)>1
+    assert max(len(chunk["text"]) for chunk in chunks)<=700
+
+def test_ai_chunk_groups_must_be_complete_contiguous_and_bounded():
+    parts=[{"text":"A"*500,"title":"A"},{"text":"B"*500,"title":"B"},{"text":"C"*500,"title":"C"}]
+    groups=knowledge_import._validate_groups([
+        {"part_numbers":[1,2],"title":"Procedura","module":"ASW11","keywords":["RW"]},
+        {"part_numbers":[3],"title":"Weryfikacja"},
+    ],parts)
+    assert groups[0]["part_numbers"]==[1,2]
+    try:
+        knowledge_import._validate_groups([
+            {"part_numbers":[1,3],"title":"Błędna grupa"},
+            {"part_numbers":[2],"title":"Powtórzenie"},
+        ],parts)
+        assert False,"oczekiwano odrzucenia nieciągłej propozycji"
+    except ValueError:
+        pass
+
+def test_ai_chunk_proposals_preserve_source_text(monkeypatch):
+    monkeypatch.setattr(knowledge_import,"split_into_chunks",lambda *args,**kwargs:[
+        {"text":"Pierwszy krok.","title":"Krok 1","page_from":1,"page_to":1},
+        {"text":"Drugi krok.","title":"Krok 2","page_from":1,"page_to":2},
+    ])
+    monkeypatch.setattr(knowledge_import,"_map_document",lambda *args,**kwargs:(
+        {"document_title":"Instrukcja","modules":["ASW11"]},"external_api",""))
+    monkeypatch.setattr(knowledge_import,"_group_batch",lambda parts,*args,**kwargs:([
+        {"part_numbers":[1,2],"title":"Wydanie RW","module":"ASW11","operation":"wydanie",
+         "content_type":"procedure","keywords":["RW","bufor"]}
+    ],"external_api",""))
+    proposals,document_map,provider,error=knowledge_import.propose_chunks(
+        "tekst",[],"ASW",{"llm_response_tokens":1200})
+    assert proposals[0]["chunk_text"]=="Pierwszy krok.\n\nDrugi krok."
+    assert proposals[0]["metadata"]["page_from"]==1
+    assert document_map["modules"]==["ASW11"] and provider=="external_api" and not error
 def test_docx_parser_preserves_heading_style(tmp_path):
     path=tmp_path/"instruction.docx"; document=Document()
     document.add_heading("Procedura aktualizacji",level=1)
@@ -71,6 +145,14 @@ def test_support_prompt_is_technical_not_legal():
     assert "kolejnych numerowanych kroków" in prompt and "co zrobić, dlaczego" in prompt
     assert "Nie twórz stylu prawnego" in prompt and "Nie wypisuj numerów materiałów" in prompt
     assert "Nie używaj składni Markdown" in prompt
+def test_task_prompt_is_short_and_redirects_to_consultation():
+    prompt=support_graph.build_technical_support_prompt({
+        "client_ref":"K-test","effective_description":"Aktualizacja modułu ZZL",
+        "recognized":{"issue_kind":"task"},"sources":[],
+    })
+    assert "W ramach tego zadania pamiętaj o:" in prompt
+    assert "Nie diagnozuj przyczyny" in prompt
+    assert "Konsultacja AI" in prompt
 def test_llm_markdown_emphasis_is_removed():
     assert support_graph.plain_text_response("## Diagnoza\n**Błąd**\n* krok")=="Diagnoza\nBłąd\n- krok"
 def test_support_prompt_uses_titles_full_chunks_and_global_budget():
@@ -108,7 +190,10 @@ def test_feedback_validation():
     assert validate_feedback("helped","wykonano poprawnie")[0]=="consistent"
 def test_interpretation():
     result=interpret_locally("Błąd ERR-1234 w wersji 2.4.1 podczas zapisu")
-    assert result["error_code"] and result["version"]=="2.4.1"
+    assert result["error_code"] and result["version"]=="2.4.1" and result["issue_kind"]=="problem"
+def test_task_interpretation_does_not_require_error_or_version():
+    result=interpret_locally("Aktualizacja modułu ZZL i przygotowanie pakietu FAKTURY")
+    assert result["issue_kind"]=="task" and result["missing"]==[]
 def test_non_finite_scores_are_json_safe(): assert json_safe({"score":float("nan")})=={"score":None}
 def test_clarification_answers_reach_model_context():
     enriched=enrich_description("Problem z usługą",{"error_code":"brak","version":"4.2"})

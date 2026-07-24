@@ -8,7 +8,9 @@ programs -> tickets -> ticket_problem_links -> canonical_problems -> solutions -
 programs -> historical_cases
 tickets -> resolution_attempts -> step_results / feedback
 tickets -> ticket_resolution_reports -> published solution
-programs -> knowledge_documents -> knowledge_chunks -> solution_evidence
+tickets -> ticket_images -> solution_image_links -> solutions
+programs -> knowledge_documents -> knowledge_chunk_proposals
+                             \-> knowledge_chunks -> solution_evidence
 tickets -> support_jobs / workflow_checkpoints / audit_events
 users -> application_settings
 ```
@@ -24,3 +26,11 @@ Migracja `0006_knowledge_curation` dodaje do przypadku opcjonalny `client_id` or
 Migracja `0004_application_settings` dodaje ustawienia typu klucz–wartość wraz z administratorem i czasem ostatniej zmiany. Do bazy trafiają wyłącznie kontrolowane wartości liczbowe; sekrety pozostają w środowisku uruchomieniowym.
 
 Migracja `0005_external_llm` dodaje przełącznik `external_llm_enabled`. Domyślna wartość włącza strategię external-first, ale brak kompletnej konfiguracji dostawcy powoduje bezpieczny fallback do Ollamy.
+
+Migracja `0011_document_chunk_review` dodaje kontrolowany cykl życia dokumentu:
+`pending_analysis → analyzing → pending_review → indexed` albo `analysis_failed`.
+`knowledge_chunk_proposals` przechowuje dokładną, jeszcze nieprzeszukiwalną treść propozycji, kolejność oraz metadane: tytuł techniczny, moduł, operację, typ treści, słowa kluczowe, strony i mapę dokumentu. Dopiero akceptacja kopiuje propozycje do `knowledge_chunks` i wylicza embeddingi. Istniejące dokumenty otrzymują stan `indexed`.
+
+Migracja `0012_ticket_images` dodaje `ticket_images` z przeznaczeniem `problem` albo `solution`, ścieżką kontrolowanego pliku, MIME, rozmiarem, autorem oraz osobnym zatwierdzeniem administratora do AI. `solution_image_links` wiąże obrazy wykonanych czynności z opublikowanym rozwiązaniem.
+
+Migracja `0013_historical_case_images` dodaje analogiczne obrazy bezpośrednio do `historical_cases`. `purpose=problem` opisuje objaw lub komunikat błędu, a `purpose=solution` krok albo rezultat naprawy. Każdy obraz ma niezależny stan dopuszczenia do AI.

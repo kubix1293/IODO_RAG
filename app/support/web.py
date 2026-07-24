@@ -1,10 +1,11 @@
 from __future__ import annotations
-import hashlib, html, json, os, shutil, uuid
+import hashlib, html, io, json, os, shutil, uuid
 from pathlib import Path
+import magic
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from PIL import Image
 from pydantic import BaseModel, Field
-from iodo_rag.chunking import split_into_chunks
 from iodo_rag.embeddings import EmbeddingClient
 from iodo_rag.parsers import parse_document
 from iodo_rag.vector import to_pgvector
@@ -12,8 +13,9 @@ from .config import settings
 from .db import application_settings, audit, connect, create_session, session_user
 from .security import anonymize, client_reference, hash_password, ip_hash, require_role, token, verify_password
 from .workflow import validate_feedback
-from .learning import curate_knowledge
+from .learning import curate_knowledge, effectiveness_counter, should_create_historical_case
 from .chat import answer_consultation
+from .knowledge_import import propose_chunks
 
 app=FastAPI(title="IODO Support",version="1.0.0")
 
@@ -94,7 +96,7 @@ class ResolutionReportIn(BaseModel):
     actual_resolution:str=Field(min_length=10)
     comment:str|None=None
 class PublishResolutionIn(BaseModel):
-    title:str=Field(min_length=3,max_length=240)
+    title:str|None=Field(default=None,max_length=240)
     scope:str=Field(pattern="^(global|client)$")
 class ConsultationCreateIn(BaseModel):
     ticket_id:str|None=Field(default=None,min_length=8,max_length=36)
@@ -138,6 +140,39 @@ def bootstrap():
 
 @app.get("/health")
 def health(): return {"status":"ok"}
+
+
+def store_uploaded_image(file:UploadFile,folder:str,image_id:uuid.UUID)->tuple[Path,str,int]:
+    data=file.file.read(10*1024*1024+1)
+    if not data or len(data)>10*1024*1024:
+        raise HTTPException(413,"Obraz może mieć maksymalnie 10 MB")
+    detected=magic.from_buffer(data,mime=True)
+    if detected not in {"image/jpeg","image/png","image/webp"}:
+        raise HTTPException(415,"Obsługiwane są obrazy JPEG, PNG i WebP")
+    try:
+        image=Image.open(io.BytesIO(data))
+        image.verify()
+        image=Image.open(io.BytesIO(data))
+        image.thumbnail((2048,2048))
+        image.load()
+    except Exception:
+        raise HTTPException(415,"Plik nie jest poprawnym obrazem")
+    extension={"image/jpeg":".jpg","image/png":".png","image/webp":".webp"}[detected]
+    root=Path(settings.upload_root)/folder
+    root.mkdir(parents=True,exist_ok=True)
+    target=root/f"{image_id}{extension}"
+    clean=Image.new(image.mode,image.size)
+    clean.paste(image)
+    save_options={"format":{"image/jpeg":"JPEG","image/png":"PNG","image/webp":"WEBP"}[detected]}
+    if detected=="image/jpeg":
+        if clean.mode not in {"RGB","L"}: clean=clean.convert("RGB")
+        save_options.update({"quality":90,"optimize":True})
+    elif detected=="image/png":
+        save_options.update({"optimize":True})
+    else:
+        save_options.update({"quality":90})
+    clean.save(target,**save_options)
+    return target,detected,target.stat().st_size
 
 @app.get("/",response_class=HTMLResponse)
 def index(request:Request):
@@ -233,12 +268,12 @@ def knowledge_review_page(current=Depends(user)):
         <td>{html.escape(row["client_name"])}</td><td>{html.escape(row["program_name"])}</td>
         <td>{html.escape(row["description"][:140])}</td><td>{html.escape(row["actual_resolution"][:180])}</td>
         <td>{html.escape(row["outcome"])} · {row["suggestion_rating"]}/5</td>
-        <td><a href='/tickets/{row["id"]}/view#knowledge-publication'>Oceń i opublikuj</a></td></tr>"""
+        <td><a href='/tickets/{row["id"]}/view#knowledge-publication'>Zatwierdź skuteczność</a></td></tr>"""
         for row in pending
     ) or "<tr><td colspan='7'>Brak rozwiązań oczekujących na zatwierdzenie.</td></tr>"
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Do zatwierdzenia</title>
     <div class='desk-kicker'>Baza wiedzy</div><h1>Rozwiązania do zatwierdzenia</h1>
-    <p>Raport serwisanta nie trafia do aktywnej bazy wiedzy, dopóki starszy serwisant lub administrator go nie opublikuje.</p>
+    <p>Starszy serwisant zatwierdza skuteczność, a kurator decyduje, czy wystarczy aktualizacja statystyk, uzupełnienie rozwiązania, czy potrzebny jest nowy przypadek.</p>
     <table><thead><tr><th>Zgłoszenie</th><th>Klient</th><th>System</th><th>Opis</th><th>Rozwiązanie</th><th>Ocena</th><th>Akcja</th></tr></thead>
     <tbody>{rows}</tbody></table></html>""",current,"review")
 
@@ -251,15 +286,61 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
         cur.execute("SELECT * FROM support.ticket_resolution_reports WHERE ticket_id=%s",(ticket_id,)); report=cur.fetchone()
         cur.execute("SELECT provider,scope,decision,created_at FROM support.knowledge_curation_runs WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1",(ticket_id,)); curation=cur.fetchone()
         cur.execute("SELECT status,last_error,updated_at FROM support.support_jobs WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 1",(ticket_id,)); job=cur.fetchone()
+        cur.execute("""SELECT i.*,u.username uploader,a.username approver FROM support.ticket_images i
+          JOIN support.users u ON u.id=i.uploaded_by LEFT JOIN support.users a ON a.id=i.ai_approved_by
+          WHERE i.ticket_id=%s ORDER BY i.uploaded_at""",(ticket_id,)); ticket_images=cur.fetchall()
     state=dict(ticket["workflow_state"] or {}); answer_text=state.get("proposed_answer") or ("Analiza czeka na uzupełnienie danych." if ticket["status"]=="needs_information" else "Analiza nie została jeszcze wykonana."); answer=html.escape(answer_text)
     provider_labels={"external_api":"zewnętrzne API","ollama_fallback":"lokalna Ollama (fallback)","ollama_local":"lokalna Ollama"}
     provider_note=f"<p><strong>Generator:</strong> {provider_labels.get(state.get('llm_provider'),state.get('llm_provider'))} · anonimizacje: {len(state.get('privacy_redactions') or [])}</p>" if state.get("llm_provider") else ""
     sources=[]
     for index,source in enumerate(state.get("sources") or [],1):
-        label="Przypadek historyczny" if source.get("kind")=="historical_case" else "Dokumentacja"
+        label={"historical_case":"Przypadek historyczny","approved_solution":"Zatwierdzone rozwiązanie"}.get(source.get("kind"),"Dokumentacja")
         score=source.get("rerank_score"); score_text=f" · trafność {float(score):.3f}" if isinstance(score,(int,float)) else ""
         sources.append(f"<details><summary>{index}. {label}: {html.escape(source.get('title') or 'bez tytułu')}{score_text}</summary><pre>{html.escape(source.get('chunk_text') or '')}</pre></details>")
     source_html="".join(sources) or "<p>Brak trafnych źródeł.</p>"
+    solution_ids=sorted({int(source["solution_id"]) for source in state.get("sources") or [] if source.get("solution_id")})
+    related_images=[]
+    if solution_ids:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT DISTINCT i.id,i.original_name,s.title solution_title
+              FROM support.solution_image_links l JOIN support.ticket_images i ON i.id=l.image_id
+              JOIN support.solutions s ON s.id=l.solution_id WHERE l.solution_id=ANY(%s)
+              ORDER BY s.title,i.original_name""",(solution_ids,))
+            related_images=cur.fetchall()
+    related_html="".join(
+        f"<figure><a href='/api/v1/ticket-images/{row['id']}' target='_blank'><img src='/api/v1/ticket-images/{row['id']}' loading='lazy'></a><figcaption>{html.escape(row['solution_title'])} · {html.escape(row['original_name'])}</figcaption></figure>"
+        for row in related_images
+    )
+    historical_case_ids=[]
+    for source in state.get("sources") or []:
+        if source.get("kind")=="historical_case":
+            try: historical_case_ids.append(uuid.UUID(str(source.get("id"))))
+            except (TypeError,ValueError,AttributeError): pass
+    case_images=[]
+    if historical_case_ids:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT i.id,i.original_name,i.purpose,c.title case_title
+              FROM support.historical_case_images i JOIN support.historical_cases c ON c.id=i.case_id
+              WHERE i.case_id=ANY(%s) AND i.ai_approved_at IS NOT NULL
+              ORDER BY c.title,i.uploaded_at""",(list(dict.fromkeys(historical_case_ids)),))
+            case_images=cur.fetchall()
+    related_html+="".join(
+        f"<figure><a href='/api/v1/case-images/{row['id']}' target='_blank'><img src='/api/v1/case-images/{row['id']}' loading='lazy'></a><figcaption>{html.escape(row['case_title'])} · {'objaw' if row['purpose']=='problem' else 'rozwiązanie'} · {html.escape(row['original_name'])}</figcaption></figure>"
+        for row in case_images
+    )
+    related_html=related_html or "<p>Brak obrazów powiązanych z odnalezionymi przypadkami i rozwiązaniami.</p>"
+    image_cards=[]
+    analyzed_ids=set(state.get("analyzed_image_ids") or [])
+    for image in ticket_images:
+        approved=bool(image["ai_approved_at"])
+        approval=("zatwierdzony do AI przez "+html.escape(image["approver"])) if approved else "niezatwierdzony do wysłania do AI"
+        analyzed=" · użyty w ostatniej analizie" if str(image["id"]) in analyzed_ids else ""
+        approve_button=(f"<button class='approve-image' data-id='{image['id']}'>Potwierdź anonimizację i dopuść do AI</button>"
+                        if current["role"]=="admin" and not approved and image["purpose"]=="problem" else "")
+        image_cards.append(f"""<figure><a href='/api/v1/ticket-images/{image["id"]}' target='_blank'><img src='/api/v1/ticket-images/{image["id"]}' loading='lazy'></a>
+          <figcaption>{html.escape(image["original_name"])} · {'objaw' if image["purpose"]=='problem' else 'rozwiązanie'}<br>{approval}{analyzed}</figcaption>
+          {approve_button}<button class='delete-image' data-id='{image["id"]}'>Usuń</button></figure>""")
+    ticket_images_html="".join(image_cards) or "<p>Brak obrazów w zgłoszeniu.</p>"
     csrf_value=html.escape(current["csrf_token"],quote=True); report_html=""
     if report:
         published=f"<p><strong>Opublikowane rozwiązanie ID:</strong> {report['published_solution_id']}</p>" if report["published_solution_id"] else ""
@@ -270,7 +351,7 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
         report_html=f"<section><h2>Raport realizacji</h2><p>Wynik: {html.escape(report['outcome'])}; ocena podpowiedzi: {report['suggestion_rating']}/5</p><pre>{html.escape(report['actual_resolution'])}</pre>{published}{curation_html}</section>"
     senior_publish=""
     if current["role"] in {"senior_technician","admin"} and report and not report["published_solution_id"]:
-        senior_publish="""<section id='knowledge-publication'><h2>Zatwierdzenie i publikacja do bazy wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą i połączy, uzupełni albo utworzy właściwy wątek.</p><form id='publish-form'><label>Tytuł rozwiązania<input name='title' minlength='3' required></label><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Zatwierdź i opublikuj rozwiązanie</button></form><div id='publish-message'></div></section>"""
+        senior_publish="""<section id='knowledge-publication'><h2>Zatwierdzenie skuteczności i kuracja wiedzy</h2><p>Kurator AI porówna metodę z istniejącą wiedzą. Duplikat tylko zaktualizuje skuteczność, uzupełnienie dopisze wiedzę do istniejącego rozwiązania, a osobny przypadek powstanie wyłącznie przy braku właściwego powiązania.</p><form id='publish-form'><label>Zakres wiedzy<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla tego klienta</option></select></label><button>Zatwierdź skuteczność i poddaj kuracji</button></form><div id='publish-message'></div></section>"""
     running=bool(job and job["status"] in {"queued","running"}); auto_refresh="setTimeout(()=>location.reload(),3000);" if running else ""
     progress_html="<div id='work-status' class='progress'><span class='spinner'></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span></div>" if running else "<div id='work-status'></div>"
     clarification_html=""
@@ -281,12 +362,15 @@ def ticket_workbench(ticket_id:uuid.UUID,current=Depends(user)):
         clarification_html=f"<section class='warning'><h2>Potrzebne uzupełnienie</h2><p>Analiza została zatrzymana, ponieważ brakuje danych. Uzupełnij pola i wznów — odpowiedzi zostaną dołączone do opisu dla modelu.</p><form id='resume-form'>{''.join(fields)}<button>Uzupełnij i wznów analizę</button></form><div id='resume-message'></div></section>"
     job_text=f"{job['status']}: {job.get('last_error') or ''}" if job else "brak"
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Zgłoszenie {ticket_id}</title>
-    <style>body{{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem}}section{{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}}pre{{white-space:pre-wrap}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:9rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}.progress{{display:flex;gap:.8rem;align-items:center;padding:1rem;background:#eef6ff;border:1px solid #8abcec;border-radius:8px}}.warning{{background:#fff8df;border-color:#d5a72f}}.spinner{{width:20px;height:20px;border:3px solid #b9d7f2;border-top-color:#1769aa;border-radius:50%;animation:spin .8s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style>
+    <style>body{{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem}}section{{border:1px solid #ddd;border-radius:8px;padding:1rem;margin:1rem 0}}pre{{white-space:pre-wrap}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:9rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}.progress{{display:flex;gap:.8rem;align-items:center;padding:1rem;background:#eef6ff;border:1px solid #8abcec;border-radius:8px}}.warning{{background:#fff8df;border-color:#d5a72f}}.spinner{{width:20px;height:20px;border:3px solid #b9d7f2;border-top-color:#1769aa;border-radius:50%;animation:spin .8s linear infinite}}.image-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}}figure{{margin:0;padding:10px;border:1px solid var(--line);border-radius:10px}}figure img{{width:100%;height:160px;object-fit:contain;background:#f3f5f4;border-radius:6px}}figcaption{{font-size:12px;color:var(--muted);margin-top:8px}}figure button{{font-size:11px;margin-right:5px!important}}@keyframes spin{{to{{transform:rotate(360deg)}}}}</style>
     <div class='desk-kicker'>Zgłoszenie #{str(ticket_id)[:8]}</div><p><a href='/tickets'>← Wszystkie zgłoszenia</a></p><h1>{html.escape(ticket['program_name'])} · {html.escape(ticket['client_name'])}</h1><p><span class='desk-status'>{html.escape(str(ticket['status']))}</span> &nbsp; zadanie: {html.escape(job_text)}</p>{progress_html}{clarification_html}
     <section><h2>Opis zgłoszenia</h2><pre>{html.escape(ticket['description'])}</pre><button id='analyse'>Uruchom / ponów analizę modelu</button></section>
-    <section><h2>Proponowana odpowiedź</h2>{provider_note}<pre>{answer}</pre><h3>Źródła</h3>{source_html}</section>
-    <section><h2>Zgłoś realizację i oceń podpowiedź</h2><form id='report-form'><label>Wynik<select name='outcome'><option value='helped'>Pomogła</option><option value='partially_helped'>Częściowo pomogła</option><option value='not_helped'>Nie pomogła</option></select></label><label>Ocena podpowiedzi 1–5<input name='suggestion_rating' type='number' min='1' max='5' value='3' required></label><label>Faktycznie zastosowane rozwiązanie<textarea name='actual_resolution' minlength='10' required></textarea></label><label>Komentarz<textarea name='comment'></textarea></label><button>Zapisz raport realizacji</button></form><div id='report-message'></div></section>{report_html}{senior_publish}
-    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const b=Object.fromEntries(new FormData(e.target).entries());b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});document.getElementById('report-message').textContent=r.ok?'Raport zapisany. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Kurator AI porównuje rozwiązanie z bazą wiedzy…';const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Wiedza przeanalizowana i opublikowana. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};{auto_refresh}</script></html>""",current,"tickets")
+    <section><h2>Zdjęcia i zrzuty ekranu</h2><p>Obraz typu „objaw” trafi do modelu dopiero po potwierdzeniu anonimizacji przez administratora. Obraz typu „rozwiązanie” zostanie powiązany z metodą podczas publikacji wiedzy.</p>
+    <form id='image-form'><label>Rodzaj<select name='purpose'><option value='problem'>Objaw / komunikat błędu</option><option value='solution'>Krok rozwiązania</option></select></label><label>Obraz JPEG, PNG lub WebP (maks. 10 MB)<input type='file' name='file' accept='image/jpeg,image/png,image/webp' required></label><button>Dodaj obraz</button></form><div id='image-message'></div><div class='image-grid'>{ticket_images_html}</div></section>
+    <section><h2>Proponowana odpowiedź</h2>{provider_note}<pre>{answer}</pre><h3>Powiązane obrazy przypadków i rozwiązań</h3><div class='image-grid'>{related_html}</div><h3>Źródła</h3>{source_html}</section>
+    <section><h2>Zgłoś realizację i oceń podpowiedź</h2><form id='report-form'><label>Wynik<select name='outcome'><option value='helped'>Pomogła</option><option value='partially_helped'>Częściowo pomogła</option><option value='not_helped'>Nie pomogła</option></select></label><label>Ocena podpowiedzi 1–5<input name='suggestion_rating' type='number' min='1' max='5' value='3' required></label><label>Faktycznie zastosowane rozwiązanie<textarea name='actual_resolution' minlength='10' required></textarea></label><label>Zdjęcia kolejnych kroków lub rezultatu rozwiązania<input type='file' name='solution_images' accept='image/jpeg,image/png,image/webp' multiple></label><p>Te obrazy zostaną zapisane jako część rozwiązania i powiązane z metodą po zatwierdzeniu jej do bazy wiedzy.</p><label>Komentarz<textarea name='comment'></textarea></label><button>Zapisz raport realizacji wraz ze zdjęciami</button></form><div id='report-message'></div></section>{report_html}{senior_publish}
+    <script>document.getElementById('image-form').onsubmit=async e=>{{e.preventDefault();const button=e.submitter;button.disabled=true;const r=await fetch('/api/v1/tickets/{ticket_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:new FormData(e.target)}});document.getElementById('image-message').textContent=r.ok?'Obraz zapisany. Odświeżam…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),500);else button.disabled=false;}};document.querySelectorAll('.approve-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Potwierdzasz, że obraz został zanonimizowany i może zostać wysłany do zewnętrznego modelu?'))return;const data=new FormData();data.append('note','Anonimizacja potwierdzona w panelu');const r=await fetch('/api/v1/ticket-images/'+button.dataset.id+'/approve-for-ai',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:data}});if(r.ok)location.reload();else alert(await r.text());}});document.querySelectorAll('.delete-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Usunąć obraz?'))return;const r=await fetch('/api/v1/ticket-images/'+button.dataset.id,{{method:'DELETE',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});if(r.ok)location.reload();else alert(await r.text());}});</script>
+    <script>const csrf='{csrf_value}';const showProgress=()=>{{document.getElementById('work-status').className='progress';document.getElementById('work-status').innerHTML='<span class="spinner"></span><span>Model analizuje zgłoszenie, wyszukuje źródła i przygotowuje odpowiedź…</span>';}};document.getElementById('analyse').onclick=async(e)=>{{e.target.disabled=true;showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)setTimeout(()=>location.reload(),800);else{{e.target.disabled=false;alert(await r.text());}}}};const rf=document.getElementById('resume-form');if(rf)rf.onsubmit=async(e)=>{{e.preventDefault();const answers=Object.fromEntries(new FormData(e.target).entries());showProgress();const r=await fetch('/api/v1/tickets/{ticket_id}/workflow/resume',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify({{answers}})}});document.getElementById('resume-message').textContent=r.ok?'Dane zapisane. Wznawiam analizę…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),800);}};document.getElementById('report-form').onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;const formData=new FormData(e.target);const files=[...e.target.solution_images.files];const b=Object.fromEntries([...formData.entries()].filter(([key])=>key!=='solution_images'));b.suggestion_rating=Number(b.suggestion_rating);const r=await fetch('/api/v1/tickets/{ticket_id}/resolution-report',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(b)}});const message=document.getElementById('report-message');if(!r.ok){{message.textContent='Błąd: '+await r.text();button.disabled=false;return;}}for(const file of files){{message.textContent='Raport zapisany. Dodaję zdjęcia rozwiązania…';const imageData=new FormData();imageData.append('purpose','solution');imageData.append('file',file);const ir=await fetch('/api/v1/tickets/{ticket_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:imageData}});if(!ir.ok){{message.textContent='Raport zapisany, ale obraz został odrzucony: '+await ir.text();button.disabled=false;return;}}}}message.textContent='Raport i zdjęcia rozwiązania zapisane. Odświeżam…';setTimeout(()=>location.reload(),700);}};const pf=document.getElementById('publish-form');if(pf)pf.onsubmit=async(e)=>{{e.preventDefault();const button=e.submitter;button.disabled=true;document.getElementById('publish-message').textContent='Kurator AI porównuje rozwiązanie z bazą wiedzy…';const r=await fetch('/api/v1/tickets/{ticket_id}/publish-resolution',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(Object.fromEntries(new FormData(e.target).entries()))}});document.getElementById('publish-message').textContent=r.ok?'Wiedza przeanalizowana i opublikowana. Odświeżam...':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),700);else button.disabled=false;}};{auto_refresh}</script></html>""",current,"tickets")
 
 @app.get("/tickets/new",response_class=HTMLResponse)
 def new_ticket_page(current=Depends(user)):
@@ -308,8 +392,9 @@ def new_ticket_page(current=Depends(user)):
     <label>System<select name='program_id' required>{program_options}</select></label>
     <label>Instalacja<select name='installation_id'><option value=''>Brak / nie dotyczy</option></select></label>
     <label>Opis zgłoszenia<textarea name='description' minlength='10' required placeholder='Objawy, kod błędu, wersja, wykonane czynności...'></textarea></label>
+    <label>Zdjęcia objawu / zrzuty ekranu (opcjonalnie)<input type='file' name='images' accept='image/jpeg,image/png,image/webp' multiple></label><p>Zdjęcia nie zostaną wysłane do modelu przed potwierdzeniem anonimizacji przez administratora.</p>
     <button type='submit'>Utwórz i analizuj zgłoszenie</button></form><div id='message'></div></section>
-    <script>const installations={installation_json};const form=document.getElementById('ticket-form');const install=form.installation_id;function refresh(){{install.innerHTML='<option value="">Brak / nie dotyczy</option>';for(const row of installations)if(row.client_id==form.client_id.value&&row.program_id==form.program_id.value){{const o=document.createElement('option');o.value=row.id;o.textContent=[row.version,row.environment].filter(Boolean).join(' / ')||('Instalacja '+row.id);install.appendChild(o);}}}}form.client_id.onchange=refresh;form.program_id.onchange=refresh;refresh();form.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(form);const body=Object.fromEntries(f.entries());body.client_id=Number(body.client_id);body.program_id=Number(body.program_id);body.installation_id=body.installation_id?Number(body.installation_id):null;const r=await fetch('/api/v1/tickets',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});const m=document.getElementById('message');if(r.ok){{const data=await r.json();await fetch('/api/v1/tickets/'+data.id+'/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/tickets/'+data.id+'/view';}}else m.textContent='Błąd: '+await r.text();}});</script></html>""",current,"new")
+    <script>const installations={installation_json};const form=document.getElementById('ticket-form');const install=form.installation_id;function refresh(){{install.innerHTML='<option value="">Brak / nie dotyczy</option>';for(const row of installations)if(row.client_id==form.client_id.value&&row.program_id==form.program_id.value){{const o=document.createElement('option');o.value=row.id;o.textContent=[row.version,row.environment].filter(Boolean).join(' / ')||('Instalacja '+row.id);install.appendChild(o);}}}}form.client_id.onchange=refresh;form.program_id.onchange=refresh;refresh();form.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(form);const files=[...form.images.files];const body=Object.fromEntries([...f.entries()].filter(([key])=>key!=='images'));body.client_id=Number(body.client_id);body.program_id=Number(body.program_id);body.installation_id=body.installation_id?Number(body.installation_id):null;const r=await fetch('/api/v1/tickets',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});const m=document.getElementById('message');if(r.ok){{const data=await r.json();for(const file of files){{const imageData=new FormData();imageData.append('purpose','problem');imageData.append('file',file);const ir=await fetch('/api/v1/tickets/'+data.id+'/images',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:imageData}});if(!ir.ok){{m.textContent='Zgłoszenie zapisane, ale jeden z obrazów odrzucono: '+await ir.text();break;}}}}await fetch('/api/v1/tickets/'+data.id+'/analysis/start',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}}}});location='/tickets/'+data.id+'/view';}}else m.textContent='Błąd: '+await r.text();}});</script></html>""",current,"new")
 
 @app.get("/knowledge",response_class=HTMLResponse)
 def knowledge_page(current=Depends(user)):
@@ -319,17 +404,79 @@ def knowledge_page(current=Depends(user)):
         programs=cur.fetchall()
         cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
         clients=cur.fetchall()
+        cur.execute("""SELECT d.id,d.title,d.scope,d.status,d.analysis_provider,d.analysis_error,d.created_at,
+          p.name program_name,c.name client_name,
+          (SELECT count(*) FROM support.knowledge_chunk_proposals q WHERE q.document_id=d.id) proposal_count,
+          (SELECT count(*) FROM support.knowledge_chunks k WHERE k.document_id=d.id) chunk_count
+          FROM support.knowledge_documents d
+          JOIN support.programs p ON p.id=d.program_id
+          LEFT JOIN public.clients c ON c.id=d.client_id
+          ORDER BY d.created_at DESC""")
+        documents=cur.fetchall()
     program_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
     client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
+    status_labels={"pending_analysis":"oczekuje na analizę","analyzing":"analiza AI","pending_review":"do akceptacji",
+                   "indexed":"zaindeksowany","analysis_failed":"błąd analizy"}
+    document_rows="".join(
+        f"""<tr><td><a href='/knowledge/documents/{row["id"]}'>{html.escape(row["title"] or "bez tytułu")}</a></td>
+        <td>{html.escape(row["program_name"])}</td><td>{html.escape(row["client_name"] or "globalny")}</td>
+        <td><span class='desk-status'>{html.escape(status_labels.get(row["status"],row["status"]))}</span></td>
+        <td>{row["proposal_count"] or row["chunk_count"]}</td>
+        <td><button class='delete-document' data-id='{row["id"]}' data-title='{html.escape(row["title"] or "",quote=True)}'>Usuń</button></td></tr>"""
+        for row in documents
+    ) or "<tr><td colspan='6'>Nie zaimportowano jeszcze dokumentów.</td></tr>"
     csrf_value=html.escape(current["csrf_token"],quote=True)
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Import dokumentacji</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}select,input{{width:100%;padding:.6rem;box-sizing:border-box}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
-    <div class='desk-kicker'>Baza wiedzy</div><h1>Import dokumentacji technicznej</h1><p>PDF lub DOCX zostanie przypisany do jednego systemu. Zakres globalny jest dostępny wszystkim klientom tego systemu; zakres klienta tylko wybranemu klientowi.</p>
+    <div class='desk-kicker'>Baza wiedzy</div><h1>Import dokumentacji technicznej</h1><p>Po przesłaniu dokument nie trafia od razu do wyszukiwania. Model zaproponuje logiczny podział, a starszy serwisant zaakceptuje go przed utworzeniem embeddingów.</p>
     <section><form id='knowledge-form'><label>System<select name='program_id' required>{program_options}</select></label>
     <label>Zakres<select name='scope'><option value='global'>Globalny dla systemu</option><option value='client'>Prywatny dla klienta</option></select></label>
     <label id='client-label' hidden>Klient<select name='client_id'><option value=''>Wybierz klienta</option>{client_options}</select></label>
-    <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Importuj i indeksuj</button></form><div id='message'></div></section>
-    <script>const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const data=new FormData(form);if(form.scope.value!=='client')data.delete('client_id');const m=document.getElementById('message');m.textContent='Trwa parsowanie i indeksowanie dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':'{csrf_value}'}},body:data}});m.textContent=r.ok?'Dokument zaindeksowany: '+JSON.stringify(await r.json()):'Błąd: '+await r.text();}});</script></html>""",current,"knowledge")
+    <label>Dokument PDF/DOCX<input type='file' name='file' accept='.pdf,.docx' required></label><button type='submit'>Prześlij dokument</button></form><div id='message'></div></section>
+    <section><h2>Zaimportowane dokumenty</h2><table><thead><tr><th>Dokument</th><th>System</th><th>Zakres</th><th>Status</th><th>Fragmenty</th><th>Akcja</th></tr></thead><tbody>{document_rows}</tbody></table></section>
+    <script>const csrf='{csrf_value}';const form=document.getElementById('knowledge-form');const clientLabel=document.getElementById('client-label');form.scope.onchange=()=>clientLabel.hidden=form.scope.value!=='client';form.addEventListener('submit',async(e)=>{{e.preventDefault();if(form.scope.value==='client'&&!form.client_id.value){{document.getElementById('message').textContent='Wybierz klienta.';return;}}const data=new FormData(form);if(form.scope.value!=='client')data.delete('client_id');const m=document.getElementById('message');m.textContent='Trwa zapis dokumentu...';const r=await fetch('/api/v1/knowledge/documents',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:data}});if(r.ok){{const result=await r.json();location='/knowledge/documents/'+result.document_id;}}else m.textContent='Błąd: '+await r.text();}});document.querySelectorAll('.delete-document').forEach(button=>button.onclick=async()=>{{if(!confirm('Usunąć dokument „'+button.dataset.title+'” wraz z fragmentami?'))return;const r=await fetch('/api/v1/knowledge/documents/'+button.dataset.id,{{method:'DELETE',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location.reload();else alert('Błąd: '+await r.text());}});</script></html>""",current,"knowledge")
+
+@app.get("/knowledge/documents/{document_id}",response_class=HTMLResponse)
+def knowledge_document_page(document_id:int,current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT d.*,p.name program_name,c.name client_name,
+          u.username reviewer_name
+          FROM support.knowledge_documents d JOIN support.programs p ON p.id=d.program_id
+          LEFT JOIN public.clients c ON c.id=d.client_id
+          LEFT JOIN support.users u ON u.id=d.reviewed_by WHERE d.id=%s""",(document_id,))
+        document=cur.fetchone()
+        if not document: raise HTTPException(404,"Nie znaleziono dokumentu")
+        cur.execute("""SELECT id,proposed_index,chunk_text,metadata
+          FROM support.knowledge_chunk_proposals WHERE document_id=%s ORDER BY proposed_index""",(document_id,))
+        proposals=cur.fetchall()
+        cur.execute("""SELECT id,chunk_index,chunk_text,metadata
+          FROM support.knowledge_chunks WHERE document_id=%s ORDER BY chunk_index""",(document_id,))
+        chunks=cur.fetchall()
+    rows=proposals if proposals else chunks
+    preview="".join(
+        f"""<details><summary>{index+1}. {html.escape(str((row["metadata"] or {}).get("title") or "Fragment"))}
+        — {len(row["chunk_text"])} znaków</summary>
+        <p>Moduł: {html.escape(str((row["metadata"] or {}).get("module") or "nie określono"))};
+        operacja: {html.escape(str((row["metadata"] or {}).get("operation") or "nie określono"))};
+        strony: {html.escape(str((row["metadata"] or {}).get("page_from") or "?"))}–{html.escape(str((row["metadata"] or {}).get("page_to") or "?"))}</p>
+        <pre>{html.escape(row["chunk_text"])}</pre></details>"""
+        for index,row in enumerate(rows)
+    ) or "<p>Brak propozycji. Uruchom analizę dokumentu.</p>"
+    map_html=html.escape(json.dumps(document["document_map"] or {},ensure_ascii=False,indent=2))
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    analyze_button="<button id='analyze'>Przeanalizuj i zaproponuj podział</button>" if document["status"] in {"pending_analysis","analysis_failed"} else ""
+    approve_button="<button id='approve'>Akceptuję podział i indeksuję</button>" if document["status"]=="pending_review" and proposals else ""
+    error_html=f"<section class='warning'><strong>Uwagi analizy:</strong><pre>{html.escape(document['analysis_error'])}</pre></section>" if document["analysis_error"] else ""
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>{html.escape(document["title"] or "Dokument")}</title>
+    <style>.document-actions{{display:flex;gap:10px;align-items:center}}.document-actions button{{width:auto}}details pre{{max-height:430px;overflow:auto}}</style>
+    <div class='desk-kicker'>Dokumentacja / podział</div><h1>{html.escape(document["title"] or "Dokument")}</h1>
+    <p>System: {html.escape(document["program_name"])} · zakres: {html.escape(document["client_name"] or "globalny")} · status: <span class='desk-status'>{html.escape(document["status"])}</span></p>
+    <section class='document-actions'>{analyze_button}{approve_button}<button id='delete'>Usuń dokument</button><span id='action-status'></span></section>
+    {error_html}
+    <section><h2>Mapa dokumentu przygotowana przez model</h2><pre>{map_html}</pre></section>
+    <section><h2>{'Proponowane fragmenty do akceptacji' if proposals else 'Zaindeksowane fragmenty'}</h2><p>Łącznie: {len(rows)}. Rozwiń pozycję, aby sprawdzić dokładną treść i metadane.</p>{preview}</section>
+    <script>const csrf='{csrf_value}',id={document_id},status=document.getElementById('action-status');const analyze=document.getElementById('analyze');if(analyze)analyze.onclick=async()=>{{analyze.disabled=true;status.textContent='Model analizuje strukturę i kolejne części dokumentu. To może potrwać kilka minut…';const r=await fetch('/api/v1/knowledge/documents/'+id+'/analyze',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location.reload();else{{status.textContent='Błąd: '+await r.text();analyze.disabled=false;}}}};const approve=document.getElementById('approve');if(approve)approve.onclick=async()=>{{if(!confirm('Zaakceptować wszystkie pokazane fragmenty i udostępnić je w wyszukiwaniu?'))return;approve.disabled=true;status.textContent='Tworzenie embeddingów…';const r=await fetch('/api/v1/knowledge/documents/'+id+'/approve',{{method:'POST',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location.reload();else{{status.textContent='Błąd: '+await r.text();approve.disabled=false;}}}};document.getElementById('delete').onclick=async()=>{{if(!confirm('Usunąć dokument wraz z propozycjami i fragmentami?'))return;const r=await fetch('/api/v1/knowledge/documents/'+id,{{method:'DELETE',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location='/knowledge';else status.textContent='Błąd: '+await r.text();}};</script></html>""",current,"knowledge")
 
 @app.get("/cases",response_class=HTMLResponse)
 def cases_page(current=Depends(user)):
@@ -339,8 +486,23 @@ def cases_page(current=Depends(user)):
         programs=cur.fetchall()
         cur.execute("SELECT id,name FROM public.clients WHERE name NOT LIKE 'Smoke %' ORDER BY name")
         clients=cur.fetchall()
+        cur.execute("""SELECT c.id,c.title,c.status,c.created_at,p.name program_name,
+          cl.name client_name,count(i.id) image_count
+          FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id
+          LEFT JOIN public.clients cl ON cl.id=c.client_id
+          LEFT JOIN support.historical_case_images i ON i.case_id=c.id
+          WHERE c.status<>'retired'
+          GROUP BY c.id,p.name,cl.name ORDER BY c.created_at DESC LIMIT 200""")
+        cases=cur.fetchall()
     options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in programs)
     client_options="".join(f"<option value='{row['id']}'>{html.escape(row['name'])}</option>" for row in clients)
+    case_rows="".join(
+        f"""<tr><td><a href='/cases/{row["id"]}'>{html.escape(row["title"])}</a></td>
+        <td>{html.escape(row["program_name"])}</td>
+        <td>{html.escape(row["client_name"] or "globalny")}</td>
+        <td>{row["image_count"]}</td><td>{html.escape(row["status"])}</td></tr>"""
+        for row in cases
+    ) or "<tr><td colspan='5'>Brak zapisanych przypadków.</td></tr>"
     csrf_value=html.escape(current["csrf_token"],quote=True)
     return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>Przypadki serwisowe</title>
     <style>body{{font:16px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem}}label{{display:block;margin-top:1rem}}input,select,textarea{{width:100%;padding:.6rem;box-sizing:border-box}}textarea{{min-height:8rem}}button{{margin-top:1rem;padding:.7rem 1.2rem}}#message{{margin-top:1rem}}</style>
@@ -351,9 +513,53 @@ def cases_page(current=Depends(user)):
     <label>Tytuł<input name='title' minlength='3' required></label>
     <label>Opis zgłoszenia<textarea name='ticket_description' minlength='10' required></textarea></label>
     <label>Rozwiązanie<textarea name='resolution' minlength='10' required></textarea></label>
+    <label>Screeny błędu lub objawu<input type='file' name='problem_images' accept='image/jpeg,image/png,image/webp' multiple></label>
+    <label>Screeny kroków lub rezultatu rozwiązania<input type='file' name='solution_images' accept='image/jpeg,image/png,image/webp' multiple></label>
+    <p>Obrazy są lokalne, dopóki administrator nie potwierdzi ich anonimizacji i nie dopuści ich do analizy AI.</p>
     <label>Kod błędu<input name='error_code'></label><label>Wersja<input name='version'></label><label>Środowisko<input name='environment'></label>
     <button type='submit'>Zapisz przypadek</button></form><div id='message'></div></section>
-    <script>const caseForm=document.getElementById('case-form');const caseClientLabel=document.getElementById('case-client-label');caseForm.scope.onchange=()=>caseClientLabel.hidden=caseForm.scope.value!=='client';caseForm.addEventListener('submit',async(e)=>{{e.preventDefault();const f=new FormData(e.target);const body=Object.fromEntries(f.entries());if(body.scope==='client'&&!body.client_id){{document.getElementById('message').textContent='Wybierz klienta.';return;}}body.program_id=Number(body.program_id);body.client_id=body.scope==='client'?Number(body.client_id):null;delete body.scope;for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':'{csrf_value}'}},body:JSON.stringify(body)}});document.getElementById('message').textContent=r.ok?'Przypadek zapisany.':'Błąd: '+await r.text();if(r.ok){{e.target.reset();caseClientLabel.hidden=true;}}}});</script></html>""",current,"cases")
+    <section><h2>Istniejące przypadki</h2><table><thead><tr><th>Tytuł</th><th>System</th><th>Zakres</th><th>Obrazy</th><th>Status</th></tr></thead><tbody>{case_rows}</tbody></table></section>
+    <script>const csrf='{csrf_value}',caseForm=document.getElementById('case-form'),caseClientLabel=document.getElementById('case-client-label');caseForm.scope.onchange=()=>caseClientLabel.hidden=caseForm.scope.value!=='client';caseForm.addEventListener('submit',async(e)=>{{e.preventDefault();const problemFiles=[...e.target.problem_images.files],solutionFiles=[...e.target.solution_images.files],f=new FormData(e.target);const body=Object.fromEntries([...f.entries()].filter(([key])=>!['problem_images','solution_images'].includes(key)));if(body.scope==='client'&&!body.client_id){{document.getElementById('message').textContent='Wybierz klienta.';return;}}body.program_id=Number(body.program_id);body.client_id=body.scope==='client'?Number(body.client_id):null;delete body.scope;for(const k of ['error_code','version','environment'])if(!body[k])body[k]=null;const m=document.getElementById('message'),r=await fetch('/api/v1/cases',{{method:'POST',headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},body:JSON.stringify(body)}});if(!r.ok){{m.textContent='Błąd: '+await r.text();return;}}const created=await r.json();for(const [purpose,files] of [['problem',problemFiles],['solution',solutionFiles]])for(const file of files){{m.textContent='Przypadek zapisany. Dodaję obrazy…';const imageData=new FormData();imageData.append('purpose',purpose);imageData.append('file',file);const ir=await fetch('/api/v1/cases/'+created.id+'/images',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:imageData}});if(!ir.ok){{m.textContent='Przypadek zapisany, ale obraz odrzucono: '+await ir.text();return;}}}}location='/cases/'+created.id;}});</script></html>""",current,"cases")
+
+@app.get("/cases/{case_id}",response_class=HTMLResponse)
+def historical_case_page(case_id:uuid.UUID,current=Depends(user)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT c.*,p.name program_name,cl.name client_name
+          FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id
+          LEFT JOIN public.clients cl ON cl.id=c.client_id WHERE c.id=%s""",(case_id,))
+        case=cur.fetchone()
+        if not case: raise HTTPException(404,"Nie znaleziono przypadku")
+        cur.execute("""SELECT i.*,u.username uploader,a.username approver
+          FROM support.historical_case_images i JOIN support.users u ON u.id=i.uploaded_by
+          LEFT JOIN support.users a ON a.id=i.ai_approved_by
+          WHERE i.case_id=%s ORDER BY i.uploaded_at""",(case_id,))
+        images=cur.fetchall()
+    cards=[]
+    for image in images:
+        approved=bool(image["ai_approved_at"])
+        approval=("dopuszczony do AI przez "+html.escape(image["approver"])) if approved else "oczekuje na potwierdzenie anonimizacji"
+        approve=(f"<button class='approve-image' data-id='{image['id']}'>Potwierdź anonimizację i dopuść do AI</button>"
+                 if current["role"]=="admin" and not approved else "")
+        cards.append(f"""<figure><a href='/api/v1/case-images/{image["id"]}' target='_blank'>
+          <img src='/api/v1/case-images/{image["id"]}' loading='lazy'></a>
+          <figcaption>{html.escape(image["original_name"])} · {'objaw / błąd' if image["purpose"]=='problem' else 'rozwiązanie'}<br>{approval}</figcaption>
+          {approve}<button class='delete-image' data-id='{image["id"]}'>Usuń</button></figure>""")
+    image_html="".join(cards) or "<p>Ten przypadek nie ma jeszcze obrazów.</p>"
+    csrf_value=html.escape(current["csrf_token"],quote=True)
+    return desk_page(f"""<!doctype html><html lang='pl'><meta charset='utf-8'><title>{html.escape(case["title"])}</title>
+    <style>.image-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}}figure{{margin:0;padding:10px;border:1px solid var(--line);border-radius:10px}}figure img{{width:100%;height:180px;object-fit:contain;background:#f3f5f4}}figcaption{{font-size:12px;color:var(--muted);margin:8px 0}}</style>
+    <div class='desk-kicker'>Baza przypadków</div><p><a href='/cases'>← Wszystkie przypadki</a></p>
+    <h1>{html.escape(case["title"])}</h1>
+    <p>{html.escape(case["program_name"])} · {html.escape(case["client_name"] or "zakres globalny")} · <span class='desk-status'>{html.escape(case["status"])}</span></p>
+    <section><h2>Opis błędu lub zgłoszenia</h2><pre>{html.escape(case["ticket_description"])}</pre></section>
+    <section><h2>Rozwiązanie</h2><pre>{html.escape(case["resolution"])}</pre></section>
+    <section><h2>Screeny przypadku</h2>
+    <p>Obrazy mogą być wyświetlane serwisantom od razu. Do zewnętrznego modelu trafią dopiero po potwierdzeniu anonimizacji przez administratora i tylko wtedy, gdy ten przypadek zostanie odnaleziony w analizie.</p>
+    <form id='image-form'><label>Rodzaj<select name='purpose'><option value='problem'>Objaw / komunikat błędu</option><option value='solution'>Krok lub rezultat rozwiązania</option></select></label>
+    <label>JPEG, PNG lub WebP (maks. 10 MB)<input type='file' name='file' accept='image/jpeg,image/png,image/webp' required></label><button>Dodaj obraz</button></form>
+    <div id='image-message'></div><div class='image-grid'>{image_html}</div></section>
+    <script>const csrf='{csrf_value}';document.getElementById('image-form').onsubmit=async e=>{{e.preventDefault();const r=await fetch('/api/v1/cases/{case_id}/images',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:new FormData(e.target)}});document.getElementById('image-message').textContent=r.ok?'Obraz zapisany. Odświeżam…':'Błąd: '+await r.text();if(r.ok)setTimeout(()=>location.reload(),500);}};document.querySelectorAll('.approve-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Potwierdzasz anonimizację i zgodę na użycie obrazu przez model?'))return;const data=new FormData();data.append('note','Anonimizacja potwierdzona w karcie przypadku');const r=await fetch('/api/v1/case-images/'+button.dataset.id+'/approve-for-ai',{{method:'POST',headers:{{'X-CSRF-Token':csrf}},body:data}});if(r.ok)location.reload();else alert(await r.text());}});document.querySelectorAll('.delete-image').forEach(button=>button.onclick=async()=>{{if(!confirm('Usunąć obraz z przypadku?'))return;const r=await fetch('/api/v1/case-images/'+button.dataset.id,{{method:'DELETE',headers:{{'X-CSRF-Token':csrf}}}});if(r.ok)location.reload();else alert(await r.text());}});</script></html>""",current,"cases")
 
 @app.get("/settings",response_class=HTMLResponse)
 def settings_page(current=Depends(user)):
@@ -512,6 +718,74 @@ def get_ticket(ticket_id:uuid.UUID,current=Depends(user)):
         cur.execute("SELECT severity,body FROM support.client_notes n JOIN support.client_installations i ON i.id=n.installation_id WHERE i.id=%s AND n.retired_at IS NULL",(row["installation_id"],)); row["client_notes"]=cur.fetchall()
         return row
 
+
+@app.post("/api/v1/tickets/{ticket_id}/images",status_code=201)
+def upload_ticket_image(ticket_id:uuid.UUID,purpose:str=Form(...),file:UploadFile=File(...),current=Depends(csrf)):
+    if purpose not in {"problem","solution"}:
+        raise HTTPException(422,"Nieprawidłowe przeznaczenie obrazu")
+    image_id=uuid.uuid4()
+    target,detected,byte_size=store_uploaded_image(file,"ticket-images",image_id)
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM support.tickets WHERE id=%s",(ticket_id,))
+            if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono zgłoszenia")
+            cur.execute("""INSERT INTO support.ticket_images(
+              id,ticket_id,purpose,original_name,storage_path,mime_type,byte_size,uploaded_by)
+              VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+              RETURNING id,ticket_id,purpose,original_name,mime_type,byte_size,uploaded_at""",
+              (image_id,ticket_id,purpose,(file.filename or "obraz")[:255],str(target),detected,byte_size,current["id"]))
+            created=cur.fetchone()
+            audit(cur,current["id"],"ticket_image_upload","ticket_image",image_id,
+                  {"ticket_id":str(ticket_id),"purpose":purpose,"mime_type":detected,"byte_size":byte_size})
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return created
+
+
+@app.get("/api/v1/ticket-images/{image_id}")
+def ticket_image(image_id:uuid.UUID,current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path,mime_type,original_name FROM support.ticket_images WHERE id=%s",(image_id,))
+        image=cur.fetchone()
+    if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+    path=Path(image["storage_path"]).resolve()
+    root=(Path(settings.upload_root)/"ticket-images").resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404,"Brak pliku obrazu")
+    return FileResponse(path,media_type=image["mime_type"],filename=image["original_name"],
+                        content_disposition_type="inline")
+
+
+@app.post("/api/v1/ticket-images/{image_id}/approve-for-ai")
+def approve_ticket_image_for_ai(image_id:uuid.UUID,note:str|None=Form(None),current=Depends(csrf)):
+    require_role(current,"admin")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""UPDATE support.ticket_images SET ai_approved_by=%s,ai_approved_at=now(),
+          ai_approval_note=%s WHERE id=%s RETURNING id,ticket_id,purpose,ai_approved_at""",
+          (current["id"],(note or "")[:500] or None,image_id))
+        image=cur.fetchone()
+        if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+        audit(cur,current["id"],"ticket_image_ai_approve","ticket_image",image_id,
+              {"ticket_id":str(image["ticket_id"]),"purpose":image["purpose"]})
+    return image
+
+
+@app.delete("/api/v1/ticket-images/{image_id}",status_code=204)
+def delete_ticket_image(image_id:uuid.UUID,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path,uploaded_by FROM support.ticket_images WHERE id=%s FOR UPDATE",(image_id,))
+        image=cur.fetchone()
+        if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+        if image["uploaded_by"]!=current["id"] and current["role"] not in {"senior_technician","admin"}:
+            raise HTTPException(403,"Brak uprawnień do usunięcia obrazu")
+        audit(cur,current["id"],"ticket_image_delete","ticket_image",image_id)
+        cur.execute("DELETE FROM support.ticket_images WHERE id=%s",(image_id,))
+    path=Path(image["storage_path"]).resolve()
+    root=(Path(settings.upload_root)/"ticket-images").resolve()
+    if root in path.parents: path.unlink(missing_ok=True)
+    return Response(status_code=204)
+
 @app.post("/api/v1/tickets/{ticket_id}/analysis/start",status_code=202)
 def start(ticket_id:uuid.UUID,current=Depends(csrf)):
     job=uuid.uuid4()
@@ -595,7 +869,7 @@ def resolution_report(ticket_id:uuid.UUID,body:ResolutionReportIn,current=Depend
 def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depends(csrf)):
     require_role(current,"senior_technician")
     with connect() as conn, conn.cursor() as cur:
-        cur.execute("""SELECT t.*,r.id report_id,r.actual_resolution,r.published_solution_id
+        cur.execute("""SELECT t.*,r.id report_id,r.actual_resolution,r.outcome,r.suggestion_rating,r.published_solution_id
           FROM support.tickets t JOIN support.ticket_resolution_reports r ON r.ticket_id=t.id WHERE t.id=%s""",(ticket_id,)); row=cur.fetchone()
         if not row: raise HTTPException(409,"Najpierw zapisz raport realizacji")
         if row["published_solution_id"]: raise HTTPException(409,"Rozwiązanie zostało już opublikowane")
@@ -608,14 +882,16 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
           WHERE p.program_id=%s ORDER BY p.created_at DESC,s.created_at DESC LIMIT 40""",
           (body.scope,target_client_id,row["program_id"]))
         candidates=cur.fetchall()
+        supplied_title=(body.title or "").strip() or None
         try:
             decision,provider,curation_error=curate_knowledge(
-                cur,row["description"],row["actual_resolution"],body.title,candidates,
+                cur,row["description"],row["actual_resolution"],supplied_title,candidates,
                 client_reference(row["client_id"],settings.session_secret),
             )
         except Exception as exc:
             decision={"action":"new_problem","problem_id":None,"solution_id":None,"confidence":0.0,
-                      "reason":"Bezpieczny fallback po błędzie kuratora","canonical_title":body.title,
+                      "reason":"Bezpieczny fallback po błędzie kuratora",
+                      "canonical_title":supplied_title or row["description"][:240],
                       "canonical_description":row["description"]}
             provider="deterministic_fallback"; curation_error=str(exc)[:300]
     with connect() as conn, conn.cursor() as cur:
@@ -639,21 +915,27 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
                   WHERE solution_id=%s AND NOT EXISTS(
                     SELECT 1 FROM support.solution_steps WHERE solution_id=%s AND lower(trim(instruction))=lower(trim(%s))
                   ) GROUP BY solution_id""",(solution_id,row["actual_resolution"],solution_id,solution_id,row["actual_resolution"]))
-        if action in {"new_problem","new_solution"}:
+        if should_create_historical_case(action):
             cur.execute("""INSERT INTO support.solutions(problem_id,client_id,title,summary,status,created_by,approved_by,approved_at)
               VALUES(%s,%s,%s,%s,'approved',%s,%s,now()) RETURNING id""",
-              (problem_id,target_client_id,body.title,row["actual_resolution"],current["id"],current["id"]))
+              (problem_id,target_client_id,decision["canonical_title"],row["actual_resolution"],current["id"],current["id"]))
             solution_id=cur.fetchone()["id"]
             cur.execute("INSERT INTO support.solution_steps(solution_id,position,instruction,expected_result) VALUES(%s,1,%s,'Problem rozwiązany')",
                         (solution_id,row["actual_resolution"]))
         cur.execute("""INSERT INTO support.ticket_problem_links(ticket_id,problem_id,status,decided_by,decided_at)
           VALUES(%s,%s,'confirmed',%s,now()) ON CONFLICT(ticket_id,problem_id) DO UPDATE
           SET status='confirmed',decided_by=excluded.decided_by,decided_at=now()""",(ticket_id,problem_id,current["id"]))
-        case_id=uuid.uuid4()
-        cur.execute("""INSERT INTO support.historical_cases(
-          id,program_id,client_id,canonical_problem_id,solution_id,title,ticket_description,resolution,status,created_by)
-          VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'approved',%s)""",
-          (case_id,row["program_id"],target_client_id,problem_id,solution_id,body.title,row["description"],row["actual_resolution"],current["id"]))
+        case_id=None
+        if should_create_historical_case(action):
+            case_id=uuid.uuid4()
+            cur.execute("""INSERT INTO support.historical_cases(
+              id,program_id,client_id,canonical_problem_id,solution_id,title,ticket_description,resolution,status,created_by)
+              VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'approved',%s)""",
+              (case_id,row["program_id"],target_client_id,problem_id,solution_id,decision["canonical_title"],
+               row["description"],row["actual_resolution"],current["id"]))
+        effectiveness_column=effectiveness_counter(row["outcome"])
+        cur.execute(f"""UPDATE support.solutions SET {effectiveness_column}={effectiveness_column}+1
+          WHERE id=%s AND status='approved'""",(solution_id,))
         decision={**decision,"action":action,"problem_id":problem_id,"solution_id":solution_id,"error":curation_error}
         run_id=uuid.uuid4()
         cur.execute("""INSERT INTO support.knowledge_curation_runs(id,ticket_id,actor_id,client_id,scope,provider,decision)
@@ -661,10 +943,14 @@ def publish_resolution(ticket_id:uuid.UUID,body:PublishResolutionIn,current=Depe
           (run_id,ticket_id,current["id"],target_client_id,body.scope,provider,json.dumps(decision)))
         cur.execute("UPDATE support.ticket_resolution_reports SET published_solution_id=%s,published_at=now() WHERE id=%s",
                     (solution_id,row["report_id"]))
+        cur.execute("""INSERT INTO support.solution_image_links(solution_id,image_id)
+          SELECT %s,id FROM support.ticket_images WHERE ticket_id=%s AND purpose='solution'
+          ON CONFLICT DO NOTHING""",(solution_id,ticket_id))
         cur.execute("UPDATE support.tickets SET status='closed',closed_at=COALESCE(closed_at,now()),updated_at=now() WHERE id=%s",
                     (ticket_id,))
         audit(cur,current["id"],"curate_and_publish","ticket",ticket_id,
-              {"solution_id":solution_id,"problem_id":problem_id,"action":action,"scope":body.scope,"provider":provider})
+              {"solution_id":solution_id,"problem_id":problem_id,"action":action,"scope":body.scope,
+               "provider":provider,"effectiveness":row["outcome"],"historical_case_created":bool(case_id)})
     return {"problem_id":problem_id,"solution_id":solution_id,"historical_case_id":case_id,
             "curation_action":action,"provider":provider,"status":"approved"}
 
@@ -679,15 +965,116 @@ def upload_document(program_id:int=Form(...),scope:str=Form(...),client_id:str|N
     root=Path(settings.upload_root); root.mkdir(parents=True,exist_ok=True); target=root/f"{uuid.uuid4()}{suffix}"
     with target.open("wb") as out: shutil.copyfileobj(file.file,out)
     digest=hashlib.sha256(target.read_bytes()).hexdigest()
-    text,_,_=parse_document(target)
     with connect() as conn, conn.cursor() as cur:
-        runtime=application_settings(cur)
-        chunks=split_into_chunks(text,target_chars=runtime["chunk_target_chars"],overlap_chars=runtime["chunk_overlap_chars"])
-        vectors=EmbeddingClient(settings.embedding_url,384).embed([str(x["text"]) for x in chunks])
-        cur.execute("INSERT INTO support.knowledge_documents(program_id,client_id,scope,source_file,title,sha256,created_by) VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id",(program_id,parsed_client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"])); doc=cur.fetchone()["id"]; audit(cur,current["id"],"knowledge_upload","knowledge_document",doc)
-        for index,(chunk,vector) in enumerate(zip(chunks,vectors)):
-            cur.execute("INSERT INTO support.knowledge_chunks(document_id,chunk_index,chunk_text,metadata,embedding) VALUES(%s,%s,%s,%s::jsonb,%s::vector)",(doc,index,chunk["text"],json.dumps(chunk.get("metadata",{})),to_pgvector(vector)))
-    return {"document_id":doc,"status":"indexed","chunks":len(chunks)}
+        cur.execute("SELECT 1 FROM support.programs WHERE id=%s AND active",(program_id,))
+        if not cur.fetchone():
+            target.unlink(missing_ok=True)
+            raise HTTPException(404,"Nie znaleziono aktywnego systemu")
+        if parsed_client_id:
+            cur.execute("SELECT 1 FROM public.clients WHERE id=%s",(parsed_client_id,))
+            if not cur.fetchone():
+                target.unlink(missing_ok=True)
+                raise HTTPException(404,"Nie znaleziono klienta")
+        cur.execute("""INSERT INTO support.knowledge_documents(
+          program_id,client_id,scope,source_file,title,sha256,created_by,status)
+          VALUES(%s,%s,%s,%s,%s,%s,%s,'pending_analysis') RETURNING id""",
+          (program_id,parsed_client_id if scope=="client" else None,scope,str(target),file.filename,digest,current["id"]))
+        doc=cur.fetchone()["id"]
+        audit(cur,current["id"],"knowledge_upload","knowledge_document",doc,{"status":"pending_analysis"})
+    return {"document_id":doc,"status":"pending_analysis"}
+
+
+@app.post("/api/v1/knowledge/documents/{document_id}/analyze")
+def analyze_document(document_id:int,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""SELECT d.*,p.name program_name FROM support.knowledge_documents d
+          JOIN support.programs p ON p.id=d.program_id WHERE d.id=%s FOR UPDATE""",(document_id,))
+        document=cur.fetchone()
+        if not document: raise HTTPException(404,"Nie znaleziono dokumentu")
+        if document["status"] not in {"pending_analysis","analysis_failed"}:
+            raise HTTPException(409,"Dokument nie oczekuje na analizę")
+        cur.execute("UPDATE support.knowledge_documents SET status='analyzing',analysis_error=NULL WHERE id=%s",(document_id,))
+    try:
+        source=Path(document["source_file"])
+        text,details,_=parse_document(source)
+        runtime=application_settings()
+        proposals,document_map,provider,analysis_error=propose_chunks(
+            text,details,document["program_name"],runtime
+        )
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM support.knowledge_chunk_proposals WHERE document_id=%s",(document_id,))
+            for proposal in proposals:
+                cur.execute("""INSERT INTO support.knowledge_chunk_proposals(
+                  document_id,proposed_index,chunk_text,metadata) VALUES(%s,%s,%s,%s::jsonb)""",
+                  (document_id,proposal["proposed_index"],proposal["chunk_text"],
+                   json.dumps(proposal["metadata"],ensure_ascii=False)))
+            cur.execute("""UPDATE support.knowledge_documents
+              SET status='pending_review',analysis_provider=%s,analysis_error=%s,document_map=%s::jsonb
+              WHERE id=%s""",(provider,analysis_error or None,json.dumps(document_map,ensure_ascii=False),document_id))
+            audit(cur,current["id"],"knowledge_analyze","knowledge_document",document_id,
+                  {"provider":provider,"proposals":len(proposals),"fallback_warnings":bool(analysis_error)})
+    except Exception as exc:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("""UPDATE support.knowledge_documents
+              SET status='analysis_failed',analysis_error=%s WHERE id=%s""",(str(exc)[:2000],document_id))
+            audit(cur,current["id"],"knowledge_analysis_failed","knowledge_document",document_id,
+                  {"error":str(exc)[:500]})
+        raise HTTPException(503,f"Analiza dokumentu nie powiodła się: {str(exc)[:240]}")
+    return {"document_id":document_id,"status":"pending_review","proposals":len(proposals),
+            "provider":provider,"warnings":analysis_error or None}
+
+
+@app.post("/api/v1/knowledge/documents/{document_id}/approve")
+def approve_document_chunks(document_id:int,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.knowledge_documents WHERE id=%s FOR UPDATE",(document_id,))
+        document=cur.fetchone()
+        if not document: raise HTTPException(404,"Nie znaleziono dokumentu")
+        if document["status"]!="pending_review":
+            raise HTTPException(409,"Dokument nie oczekuje na akceptację")
+        cur.execute("""SELECT proposed_index,chunk_text,metadata
+          FROM support.knowledge_chunk_proposals WHERE document_id=%s ORDER BY proposed_index""",(document_id,))
+        proposals=cur.fetchall()
+    if not proposals: raise HTTPException(409,"Dokument nie ma propozycji podziału")
+    vectors=EmbeddingClient(settings.embedding_url,384).embed([row["chunk_text"] for row in proposals])
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status FROM support.knowledge_documents WHERE id=%s FOR UPDATE",(document_id,))
+        locked=cur.fetchone()
+        if not locked or locked["status"]!="pending_review":
+            raise HTTPException(409,"Status dokumentu zmienił się podczas indeksowania")
+        cur.execute("DELETE FROM support.knowledge_chunks WHERE document_id=%s",(document_id,))
+        for proposal,vector in zip(proposals,vectors):
+            cur.execute("""INSERT INTO support.knowledge_chunks(
+              document_id,chunk_index,chunk_text,metadata,embedding)
+              VALUES(%s,%s,%s,%s::jsonb,%s::vector)""",
+              (document_id,proposal["proposed_index"],proposal["chunk_text"],
+               json.dumps(proposal["metadata"],ensure_ascii=False),to_pgvector(vector)))
+        cur.execute("""UPDATE support.knowledge_documents SET status='indexed',
+          reviewed_by=%s,reviewed_at=now() WHERE id=%s""",(current["id"],document_id))
+        audit(cur,current["id"],"knowledge_approve","knowledge_document",document_id,{"chunks":len(proposals)})
+    return {"document_id":document_id,"status":"indexed","chunks":len(proposals)}
+
+
+@app.delete("/api/v1/knowledge/documents/{document_id}",status_code=204)
+def delete_document(document_id:int,current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT source_file,title FROM support.knowledge_documents WHERE id=%s FOR UPDATE",(document_id,))
+        document=cur.fetchone()
+        if not document: raise HTTPException(404,"Nie znaleziono dokumentu")
+        cur.execute("""SELECT count(*) count FROM support.solution_evidence e
+          JOIN support.knowledge_chunks k ON k.id=e.chunk_id WHERE k.document_id=%s""",(document_id,))
+        if cur.fetchone()["count"]:
+            raise HTTPException(409,"Dokument jest dowodem zatwierdzonego rozwiązania i nie może zostać usunięty")
+        audit(cur,current["id"],"knowledge_delete","knowledge_document",document_id,{"title":document["title"]})
+        cur.execute("DELETE FROM support.knowledge_documents WHERE id=%s",(document_id,))
+    source=Path(document["source_file"]).resolve()
+    root=Path(settings.upload_root).resolve()
+    if root in source.parents:
+        source.unlink(missing_ok=True)
+    return Response(status_code=204)
 
 @app.post("/api/v1/cases",status_code=201)
 def create_historical_case(body:HistoricalCaseIn,current=Depends(csrf)):
@@ -715,6 +1102,78 @@ def list_historical_cases(program_id:int,current=Depends(user)):
           FROM support.historical_cases c JOIN support.programs p ON p.id=c.program_id LEFT JOIN public.clients cl ON cl.id=c.client_id
           WHERE c.program_id=%s AND c.status<>'retired' ORDER BY c.created_at DESC""",(program_id,))
         return {"program_id":program_id,"cases":cur.fetchall()}
+
+
+@app.post("/api/v1/cases/{case_id}/images",status_code=201)
+def upload_historical_case_image(case_id:uuid.UUID,purpose:str=Form(...),file:UploadFile=File(...),current=Depends(csrf)):
+    require_role(current,"senior_technician")
+    if purpose not in {"problem","solution"}:
+        raise HTTPException(422,"Nieprawidłowe przeznaczenie obrazu")
+    image_id=uuid.uuid4()
+    target,detected,byte_size=store_uploaded_image(file,"case-images",image_id)
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM support.historical_cases WHERE id=%s",(case_id,))
+            if not cur.fetchone(): raise HTTPException(404,"Nie znaleziono przypadku")
+            cur.execute("""INSERT INTO support.historical_case_images(
+              id,case_id,purpose,original_name,storage_path,mime_type,byte_size,uploaded_by)
+              VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+              RETURNING id,case_id,purpose,original_name,mime_type,byte_size,uploaded_at""",
+              (image_id,case_id,purpose,(file.filename or "obraz")[:255],str(target),
+               detected,byte_size,current["id"]))
+            created=cur.fetchone()
+            audit(cur,current["id"],"historical_case_image_upload","historical_case_image",image_id,
+                  {"case_id":str(case_id),"purpose":purpose,"mime_type":detected,"byte_size":byte_size})
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return created
+
+
+@app.get("/api/v1/case-images/{image_id}")
+def historical_case_image(image_id:uuid.UUID,current=Depends(user)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path,mime_type,original_name FROM support.historical_case_images WHERE id=%s",(image_id,))
+        image=cur.fetchone()
+    if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+    path=Path(image["storage_path"]).resolve()
+    root=(Path(settings.upload_root)/"case-images").resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(404,"Brak pliku obrazu")
+    return FileResponse(path,media_type=image["mime_type"],filename=image["original_name"],
+                        content_disposition_type="inline")
+
+
+@app.post("/api/v1/case-images/{image_id}/approve-for-ai")
+def approve_historical_case_image_for_ai(image_id:uuid.UUID,note:str|None=Form(None),current=Depends(csrf)):
+    require_role(current,"admin")
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("""UPDATE support.historical_case_images SET ai_approved_by=%s,
+          ai_approved_at=now(),ai_approval_note=%s WHERE id=%s
+          RETURNING id,case_id,purpose,ai_approved_at""",
+          (current["id"],(note or "")[:500] or None,image_id))
+        image=cur.fetchone()
+        if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+        audit(cur,current["id"],"historical_case_image_ai_approve","historical_case_image",image_id,
+              {"case_id":str(image["case_id"]),"purpose":image["purpose"]})
+    return image
+
+
+@app.delete("/api/v1/case-images/{image_id}",status_code=204)
+def delete_historical_case_image(image_id:uuid.UUID,current=Depends(csrf)):
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path,uploaded_by FROM support.historical_case_images WHERE id=%s FOR UPDATE",(image_id,))
+        image=cur.fetchone()
+        if not image: raise HTTPException(404,"Nie znaleziono obrazu")
+        if image["uploaded_by"]!=current["id"] and current["role"] not in {"senior_technician","admin"}:
+            raise HTTPException(403,"Brak uprawnień do usunięcia obrazu")
+        audit(cur,current["id"],"historical_case_image_delete","historical_case_image",image_id)
+        cur.execute("DELETE FROM support.historical_case_images WHERE id=%s",(image_id,))
+    path=Path(image["storage_path"]).resolve()
+    root=(Path(settings.upload_root)/"case-images").resolve()
+    if root in path.parents: path.unlink(missing_ok=True)
+    return Response(status_code=204)
+
 
 @app.post("/api/v1/solutions/{solution_id}/approve")
 def approve(solution_id:int,current=Depends(csrf)):

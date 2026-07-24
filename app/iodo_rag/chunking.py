@@ -316,6 +316,25 @@ def split_into_chunks(
 def _merge_blocks_into_chunks(
     blocks: list[Block], *, target_chars: int, overlap_chars: int
 ) -> list[dict[str, object]]:
+    # Każdy blok musi respektować twardy limit. Parsery PDF potrafią zwrócić
+    # bardzo długi akapit/ustęp; wcześniejsza wersja przepuszczała go w całości.
+    normalized_blocks: list[Block] = []
+    for block in blocks:
+        if len(block.text) <= target_chars:
+            normalized_blocks.append(block)
+            continue
+        for piece in _recursive_split(block.text, target_chars):
+            normalized_blocks.append(
+                Block(
+                    text=piece,
+                    section=block.section,
+                    article=block.article,
+                    paragraph=block.paragraph,
+                    point=block.point,
+                    heading_path=block.heading_path,
+                )
+            )
+    blocks = normalized_blocks
     chunks: list[dict[str, object]] = []
     buffer_blocks: list[Block] = []
     buffer_len = 0
